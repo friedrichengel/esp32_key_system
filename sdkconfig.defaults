@@ -1,0 +1,86 @@
+# sdkconfig.defaults – esp32_key_system (ESP32-S31-Function-CoreBoard-1)
+# Wird beim ersten Build in sdkconfig übernommen. Nach Änderungen: sdkconfig löschen oder
+# "idf.py reconfigure". Einträge mit "PRÜFEN" müssen beim Bring-up gegen menuconfig
+# der konkreten ESP-IDF-6.1-Version abgeglichen werden.
+
+# --- Ziel / Flash / PSRAM ---------------------------------------------------
+CONFIG_IDF_TARGET="esp32s31"
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+# WROOM-3: 16 MB Octal-PSRAM, 200 MHz (vom IDF-6.1-Build automatisch so gewählt, geprüft 23.10.2026)
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_200M=y
+CONFIG_SPIRAM_USE_MALLOC=y
+# mbedTLS-Puffer (TLS-Sessions ~40 KB) im PSRAM statt im internen RAM
+CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+
+# --- Bootloader / OTA / Signierte Apps ---------------------------------------
+# Signaturprüfung von OTA-Images ohne Hardware-Secure-Boot (keine eFuses, reversibel).
+# Entscheidung 23.10.2026: Hardware-Secure-Boot vorerst NICHT, eventuell später (CONFIG_SECURE_BOOT=y
+# + CONFIG_SECURE_BOOT_V2_ENABLED=y kämen dann dazu, derselbe Schlüssel bleibt gültig).
+# RSA-3072 statt ECDSA wegen ESP32-S31-Errata (ECDSA_DS akzeptiert ungültige Signaturen).
+CONFIG_SECURE_SIGNED_APPS_NO_SECURE_BOOT=y
+CONFIG_SECURE_SIGNED_ON_UPDATE_NO_SECURE_BOOT=y
+CONFIG_SECURE_SIGNED_APPS_RSA_SCHEME=y
+CONFIG_SECURE_BOOT_BUILD_SIGNED_BINARIES=y
+CONFIG_SECURE_BOOT_SIGNING_KEY="keys/ota_signing_key.pem"
+# Automatischer Rollback, wenn die neue App sich nicht als gültig meldet
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+CONFIG_BOOTLOADER_WDT_ENABLE=y
+CONFIG_ESP_TASK_WDT_EN=y
+CONFIG_ESP_TASK_WDT_INIT=y
+CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
+CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
+
+# --- Netzwerk: Ethernet (RGMII, YT8531) ---------------------------------------
+CONFIG_ETH_ENABLED=y
+CONFIG_ETH_USE_ESP32_EMAC=y
+# RGMII-Datenpfad: Default-GPIO-Set des S31 (GPIO8-19) – siehe board_pins.h / PLAN.md
+CONFIG_ETH_DMA_RX_BUFFER_NUM=20
+CONFIG_ETH_DMA_TX_BUFFER_NUM=10
+
+# --- Netzwerk: lwIP, IPv4 + IPv6 -------------------------------------------
+CONFIG_LWIP_IPV6=y
+CONFIG_LWIP_IPV6_AUTOCONFIG=y
+CONFIG_LWIP_IPV6_DHCP6=y
+CONFIG_LWIP_IPV6_RDNSS_MAX_DNS_SERVERS=2
+CONFIG_LWIP_IPV6_NUM_ADDRESSES=4
+CONFIG_LWIP_USE_ESP_GETADDRINFO=y
+CONFIG_LWIP_MAX_SOCKETS=16
+CONFIG_LWIP_SNTP_MAX_SERVERS=2
+CONFIG_LWIP_DHCP_GET_NTP_SRV=y
+CONFIG_LWIP_LOCAL_HOSTNAME="keysystem"
+
+# --- HTTPS-Server --------------------------------------------------------------
+CONFIG_ESP_HTTPS_SERVER_ENABLE=y
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
+CONFIG_HTTPD_MAX_URI_LEN=512
+CONFIG_HTTPD_WS_SUPPORT=y
+CONFIG_ESP_TLS_SERVER_SESSION_TICKETS=y
+# Selbstsigniertes Zertifikat zur Laufzeit erzeugen (wie Casambi_Logic network_webserver_cert.cpp):
+# X.509-Create/Write sind in IDF 6.1 per Default AUS und müssen explizit an.
+CONFIG_MBEDTLS_X509_CREATE_C=y
+CONFIG_MBEDTLS_X509_CRT_WRITE_C=y
+CONFIG_MBEDTLS_PK_WRITE_C=y
+CONFIG_MBEDTLS_HARDWARE_SHA=y
+CONFIG_MBEDTLS_HARDWARE_AES=y
+CONFIG_MBEDTLS_ECP_DP_SECP256R1_ENABLED=y
+CONFIG_MBEDTLS_SSL_PROTO_TLS1_2=y
+CONFIG_MBEDTLS_SSL_PROTO_TLS1_3=y
+
+# --- Versionsangabe (erscheint in der Web-UI und im OTA-Image) -------------------
+CONFIG_APP_PROJECT_VER_FROM_CONFIG=y
+CONFIG_APP_PROJECT_VER="0.2.0-dev"
+
+# --- Logging / Konsole ----------------------------------------------------------
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200
+
+# --- FreeRTOS -------------------------------------------------------------------
+CONFIG_FREERTOS_HZ=1000
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192

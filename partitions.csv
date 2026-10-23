@@ -1,0 +1,11 @@
+# Partitionstabelle esp32_key_system – 16 MB Flash, zwei OTA-Slots, LittleFS-Datenpartition
+# Offsets bleiben leer: gen_esp32part richtet App-Partitionen automatisch aus
+# (ESP32-S31: MMU-Page 64 KB -> App-Start muss 0x10000-aligned sein, PRÜFEN beim ersten Build).
+# Name,     Type, SubType,  Offset, Size,     Flags
+nvs,        data, nvs,      ,       0x6000,
+otadata,    data, ota,      ,       0x2000,
+phy_init,   data, phy,      ,       0x1000,
+coredump,   data, coredump, ,       0x10000,
+ota_0,      app,  ota_0,    ,       0x400000,
+ota_1,      app,  ota_1,    ,       0x400000,
+storage,    data, littlefs, ,       0x700000,

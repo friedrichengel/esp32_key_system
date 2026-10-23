@@ -1,0 +1,24 @@
+# PlatformIO / ESP-IDF Build-Artefakte
+.pio/
+build/
+managed_components/
+dependencies.lock
+sdkconfig
+sdkconfig.old
+# PlatformIO legt die generierte Konfiguration als sdkconfig.<env> ab
+sdkconfig.*
+!sdkconfig.defaults
+*.bin
+*.elf
+*.map
+
+# Generiert aus main/web/* durch tools/embed_web_assets.py
+main/web_assets_gen.h
+
+# Private Schlüssel niemals einchecken
+keys/*
+!keys/.gitkeep
+
+# IDE
+.vscode/
+*.swp

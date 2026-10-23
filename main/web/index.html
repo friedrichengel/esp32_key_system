@@ -1,0 +1,360 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Key System</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <div class="brand">🔑 <span id="hd-host">Key System</span></div>
+  <nav id="nav" class="hidden">
+    <a href="#dashboard">Übersicht</a>
+    <a href="#codes">Codes</a>
+    <a href="#log">Protokoll</a>
+    <a href="#network">Netzwerk</a>
+    <a href="#cert">Zertifikat</a>
+    <a href="#firmware">Firmware</a>
+    <a href="#system">System</a>
+    <a href="#" id="btn-logout" class="muted">Abmelden</a>
+  </nav>
+</header>
+
+<main id="main">
+  <!-- Setup -->
+  <section id="view-setup" class="view card narrow hidden">
+    <h2>Ersteinrichtung</h2>
+    <p class="note">Dieses Gerät hat noch kein Admin-Passwort. Lege jetzt Benutzername und Passwort fest (mindestens 8 Zeichen).</p>
+    <form id="form-setup">
+      <label>Benutzer <input name="user" value="admin" required autocomplete="username"></label>
+      <label>Passwort <input name="password" type="password" minlength="8" required autocomplete="new-password"></label>
+      <label>Passwort wiederholen <input name="password2" type="password" minlength="8" required autocomplete="new-password"></label>
+      <button type="submit">Speichern und anmelden</button>
+    </form>
+  </section>
+
+  <!-- Login -->
+  <section id="view-login" class="view card narrow hidden">
+    <h2>Anmelden</h2>
+    <form id="form-login">
+      <label>Benutzer <input name="user" required autocomplete="username"></label>
+      <label>Passwort <input name="password" type="password" required autocomplete="current-password"></label>
+      <button type="submit">Anmelden</button>
+    </form>
+    <form id="form-login-2fa" class="hidden">
+      <p class="note">Zweiter Faktor: Code aus der Authenticator-App eingeben.</p>
+      <p id="twofa-time-warn" class="note warn hidden">⚠ Die Uhr des Geräts ist noch nicht synchron. App-Codes können gerade nicht geprüft werden, bitte einen <strong>Recovery-Code</strong> verwenden.</p>
+      <label>Code <input name="code" required autocomplete="one-time-code" inputmode="text" placeholder="123456 oder ABCDE-FGHJK"></label>
+      <p class="hint">Recovery-Codes haben die Form <code>ABCDE-FGHJK</code>; <span id="twofa-rec-left"></span></p>
+      <div class="row">
+        <button type="submit">Bestätigen</button>
+        <button type="button" class="secondary" id="btn-2fa-back">Zurück</button>
+      </div>
+    </form>
+    <p id="tls-warn" class="note warn hidden">⚠ Verbindung ist nicht verschlüsselt (Notfallmodus ohne Zertifikat).</p>
+  </section>
+
+  <!-- Dashboard -->
+  <section id="view-dashboard" class="view hidden">
+    <div class="grid">
+      <div class="card">
+        <h3>Tür</h3>
+        <div class="kv" id="dash-door"></div>
+        <button id="btn-open" class="primary big">Tür öffnen</button>
+      </div>
+      <div class="card">
+        <h3>Netzwerk</h3>
+        <div class="kv" id="dash-net"></div>
+      </div>
+      <div class="card">
+        <h3>System</h3>
+        <div class="kv" id="dash-sys"></div>
+      </div>
+    </div>
+    <div class="card">
+      <h3>Letzte Ereignisse</h3>
+      <table class="log" id="dash-log"><tbody></tbody></table>
+    </div>
+  </section>
+
+  <!-- Codes -->
+  <section id="view-codes" class="view hidden">
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <h2 style="margin:0">Zutrittscodes <span class="hint" id="codes-count"></span></h2>
+        <button id="btn-code-new">Neuer Code</button>
+      </div>
+      <p class="note warn hidden" id="codes-time-warn">⚠ Uhrzeit nicht synchron: Zeit- und Einmalcodes mit Gültigkeit werden derzeit abgelehnt, Dauercodes ohne Zeitfenster funktionieren.</p>
+      <table class="log" id="codes-table">
+        <thead><tr><th>Name</th><th>Code</th><th>Typ</th><th>Gültigkeit</th><th>Nutzungen</th><th>Zuletzt</th><th>Status</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="card hidden" id="code-editor">
+      <h3 id="code-editor-title">Neuer Code</h3>
+      <form id="form-code">
+        <input type="hidden" name="id">
+        <div class="grid2">
+          <label>Name <input name="name" maxlength="31" required placeholder="z. B. Hausmeister"></label>
+          <label>Code <input name="code" minlength="4" maxlength="12" pattern="[A-Za-z0-9]{4,12}" required placeholder="4–12 Zeichen"></label>
+          <label>Typ <select name="type"><option value="permanent">Dauercode</option><option value="timed">Zeitcode (von/bis)</option><option value="onetime">Einmalcode</option></select></label>
+          <label><input type="checkbox" name="enabled" checked> Aktiv</label>
+        </div>
+        <fieldset id="code-validity"><legend>Gültigkeit</legend>
+          <div class="grid2">
+            <label>Gültig ab <input name="valid_from_local" type="datetime-local"></label>
+            <label>Gültig bis <input name="valid_until_local" type="datetime-local"></label>
+          </div>
+          <p class="hint">Leer lassen = keine Begrenzung.</p>
+        </fieldset>
+        <fieldset><legend>Wochentag- / Uhrzeitfenster</legend>
+          <label><input type="checkbox" name="win_enable"> Nur zu bestimmten Zeiten gültig</label>
+          <div id="code-window">
+            <div class="row" id="code-weekdays">
+              <label><input type="checkbox" data-wd="0" checked> Mo</label>
+              <label><input type="checkbox" data-wd="1" checked> Di</label>
+              <label><input type="checkbox" data-wd="2" checked> Mi</label>
+              <label><input type="checkbox" data-wd="3" checked> Do</label>
+              <label><input type="checkbox" data-wd="4" checked> Fr</label>
+              <label><input type="checkbox" data-wd="5" checked> Sa</label>
+              <label><input type="checkbox" data-wd="6" checked> So</label>
+            </div>
+            <div class="grid2">
+              <label>Von (Uhrzeit) <input name="win_from_t" type="time" value="06:00"></label>
+              <label>Bis (Uhrzeit) <input name="win_to_t" type="time" value="20:00"></label>
+            </div>
+          </div>
+        </fieldset>
+        <label id="code-maxuses-row">Maximale Nutzungen (0 = unbegrenzt) <input name="max_uses" type="number" min="0" value="0"></label>
+        <div class="row">
+          <button type="submit">Speichern</button>
+          <button type="button" class="secondary" id="btn-code-cancel">Abbrechen</button>
+        </div>
+      </form>
+    </div>
+  </section>
+
+  <!-- Log -->
+  <section id="view-log" class="view card hidden">
+    <h2>Protokoll</h2>
+    <div class="row">
+      <select id="log-filter">
+        <option value="">Alle Kategorien</option>
+        <option value="access">Zutritt</option>
+        <option value="denied">Abgelehnt</option>
+        <option value="login">Login</option>
+        <option value="config">Konfiguration</option>
+        <option value="network">Netzwerk</option>
+        <option value="system">System</option>
+        <option value="ota">Firmware</option>
+      </select>
+      <button id="btn-log-refresh">Aktualisieren</button>
+      <button id="btn-log-csv" class="secondary">CSV exportieren</button>
+    </div>
+    <table class="log" id="log-table"><thead><tr><th>Zeit</th><th>Kategorie</th><th>Meldung</th></tr></thead><tbody></tbody></table>
+  </section>
+
+  <!-- Network -->
+  <section id="view-network" class="view card hidden">
+    <h2>Netzwerk</h2>
+    <form id="form-network">
+      <fieldset><legend>Allgemein</legend>
+        <label>Hostname <input name="hostname" pattern="[A-Za-z0-9-]{1,63}" required></label>
+        <p class="hint">Erreichbar als <code><span id="net-mdns">hostname</span>.local</code> (mDNS).</p>
+      </fieldset>
+      <fieldset><legend>IPv4</legend>
+        <label><input type="radio" name="ipv4_mode" value="dhcp"> DHCP</label>
+        <p class="hint">Liefert DHCP innerhalb von 20 s nach Link-up keine Adresse, fällt das Gerät auf <code>192.168.1.50/24</code> zurück. Kabel neu stecken startet DHCP erneut.</p>
+        <label><input type="radio" name="ipv4_mode" value="static"> Statisch</label>
+        <div id="ipv4-static">
+          <label>Adresse <input name="ipv4_addr" placeholder="192.168.1.50"></label>
+          <label>Netzmaske <input name="ipv4_mask" placeholder="255.255.255.0"></label>
+          <label>Gateway <input name="ipv4_gw" placeholder="192.168.1.1"></label>
+        </div>
+        <label>DNS 1 <input name="dns1" placeholder="leer = vom DHCP"></label>
+        <label>DNS 2 <input name="dns2"></label>
+      </fieldset>
+      <fieldset><legend>IPv6</legend>
+        <p class="hint">Link-Local ist immer aktiv. Der Standard-Router kommt aus Router Advertisements (kein stateful DHCPv6).</p>
+        <label><input type="checkbox" name="ipv6_slaac"> SLAAC (Adressen aus Router Advertisements)</label>
+        <label><input type="checkbox" name="ipv6_static_enable"> Zusätzliche statische Adresse</label>
+        <div id="ipv6-static">
+          <label>Adresse <input name="ipv6_addr" placeholder="2001:db8::50 oder fd00::50"></label>
+          <label>Präfixlänge <input name="ipv6_prefix_len" type="number" min="1" max="128" value="64"></label>
+        </div>
+      </fieldset>
+      <fieldset><legend>Zeit</legend>
+        <label>NTP-Server 1 <input name="ntp1"></label>
+        <label>NTP-Server 2 <input name="ntp2"></label>
+        <label>Zeitzone (POSIX) <input name="tz"></label>
+        <p class="hint">Mitteleuropa: <code>CET-1CEST,M3.5.0,M10.5.0/3</code></p>
+      </fieldset>
+      <button type="submit">Speichern</button>
+      <span class="hint">Netzwerkänderungen werden nach einem Neustart aktiv.</span>
+    </form>
+  </section>
+
+  <!-- Cert -->
+  <section id="view-cert" class="view card hidden">
+    <h2>HTTPS-Zertifikat</h2>
+    <div class="kv" id="cert-info"></div>
+    <div class="row">
+      <a id="btn-cert-download" class="button secondary" href="/api/cert/download">Zertifikat herunterladen</a>
+      <button id="btn-cert-regen" class="danger">Neu erzeugen (Neustart)</button>
+    </div>
+    <h3>Eigenes Zertifikat hochladen</h3>
+    <p class="note warn">⚠ Der Server hält das laufende Zertifikat im Speicher. Nach dem Upload ist ein Neustart nötig.</p>
+    <div class="upload-row">
+      <div><strong>Zertifikat (PEM)</strong> <span id="cert-file-status"></span></div>
+      <input type="file" id="file-cert" accept=".pem,.crt,.cer">
+      <button id="btn-upload-cert">Zertifikat hochladen</button>
+    </div>
+    <div class="upload-row">
+      <div><strong>Privater Key (PEM, unverschlüsselt)</strong> <span id="key-file-status"></span></div>
+      <input type="file" id="file-key" accept=".pem,.key">
+      <button id="btn-upload-key">Key hochladen</button>
+    </div>
+  </section>
+
+  <!-- Firmware -->
+  <section id="view-firmware" class="view hidden">
+    <div class="card">
+      <h2>Firmware</h2>
+      <div class="kv" id="fw-info"></div>
+      <p class="note warn hidden" id="fw-pending">⚠ Diese Firmware läuft zum ersten Mal und ist noch nicht bestätigt. Ohne Bestätigung fällt das Gerät beim nächsten Neustart auf die vorherige Version zurück.</p>
+    </div>
+    <div class="card">
+      <h3>Update hochladen</h3>
+      <p class="hint">Nur mit dem Projektschlüssel signierte Images (<code>firmware.bin</code> aus dem Build) werden angenommen. Die Prüfung erfolgt nach dem Upload, das Gerät startet erst nach Bestätigung neu.</p>
+      <div class="row">
+        <input type="file" id="file-fw" accept=".bin">
+        <button id="btn-fw-upload">Hochladen</button>
+      </div>
+      <progress id="fw-progress" max="100" value="0" class="hidden" style="width:100%"></progress>
+      <p id="fw-status" class="hint"></p>
+    </div>
+    <div class="card">
+      <h3>Vorherige Version</h3>
+      <div class="kv" id="fw-other"></div>
+      <button id="btn-fw-rollback" class="secondary">Auf vorherige Version zurück (Neustart)</button>
+    </div>
+  </section>
+
+  <!-- System -->
+  <section id="view-system" class="view hidden">
+    <div class="card">
+      <h2>Tür und Relais</h2>
+      <form id="form-door">
+        <label>Relais-Impulsdauer (ms) <input name="relay_pulse_ms" type="number" min="500" max="30000" step="100"></label>
+        <label><input type="checkbox" name="relay_active_low"> Relaismodul ist Active-Low</label>
+        <label><input type="checkbox" name="door_contact_enable"> Türkontakt angeschlossen</label>
+        <label><input type="checkbox" name="exit_button_enable"> Austaster (REX) angeschlossen</label>
+        <button type="submit">Speichern</button>
+      </form>
+    </div>
+    <div class="card">
+      <h2>Keypad (RS232)</h2>
+      <form id="form-keypad">
+        <label>Baudrate <select name="baud"><option>1200</option><option>2400</option><option>4800</option><option>9600</option><option>19200</option><option>38400</option><option>57600</option><option>115200</option></select></label>
+        <label>Parität <select name="parity"><option value="0">keine (8N1)</option><option value="1">gerade (8E1)</option><option value="2">ungerade (8O1)</option></select></label>
+        <label>Rahmenerkennung <select name="frame_mode"><option value="0">Abschlusszeichen</option><option value="1">Feste Länge</option><option value="2">Pause (Timeout)</option></select></label>
+        <label>Abschlusszeichen <select name="terminator"><option value="#">#</option><option value="*">*</option><option value="CR">CR</option><option value="LF">LF</option><option value="none">keins</option></select></label>
+        <label>Löschtaste <select name="clear_key"><option value="*">*</option><option value="#">#</option><option value="none">keine</option></select></label>
+        <label>Feste Länge <input name="fixed_len" type="number" min="4" max="12"></label>
+        <label>Timeout (ms) <input name="timeout_ms" type="number" min="200" max="10000" step="100"></label>
+        <label><input type="checkbox" name="learn_mode"> Lernmodus (Rohdaten anzeigen)</label>
+        <button type="submit">Speichern</button>
+      </form>
+      <div id="learn-panel" class="hidden">
+        <h3>Lernmodus: Rohdaten vom Keypad</h3>
+        <p class="hint">Tasten am Keypad drücken. Hier erscheinen die zuletzt empfangenen Bytes, damit Abschlusszeichen und Rahmen erkannt werden können. Aktualisiert alle 2 s.</p>
+        <div class="kv" id="learn-info"></div>
+        <pre id="learn-hex" class="raw"></pre>
+        <pre id="learn-ascii" class="raw"></pre>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Sicherung</h2>
+      <p class="hint">Enthält Netzwerk-, Tür- und Keypad-Einstellungen sowie alle Codes. Admin-Passwort, Zertifikat und Key sind nicht enthalten.</p>
+      <div class="row">
+        <a class="button secondary" href="/api/backup" download>Backup herunterladen</a>
+        <input type="file" id="file-restore" accept=".json,application/json">
+        <label><input type="checkbox" id="restore-net" checked> Netzwerkeinstellungen mit einspielen</label>
+        <button id="btn-restore" class="danger">Backup einspielen</button>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Admin-Passwort</h2>
+      <form id="form-password">
+        <label>Benutzer <input name="user" autocomplete="username"></label>
+        <label>Altes Passwort <input name="old_password" type="password" required autocomplete="current-password"></label>
+        <label>Neues Passwort <input name="new_password" type="password" minlength="8" required autocomplete="new-password"></label>
+        <button type="submit">Passwort ändern</button>
+      </form>
+    </div>
+    <div class="card">
+      <h2>Zwei-Faktor-Authentifizierung (TOTP)</h2>
+      <div class="kv" id="twofa-info"></div>
+      <p class="note warn hidden" id="twofa-sys-time-warn">⚠ Uhrzeit nicht synchron. Ohne gültige Zeit ist eine Anmeldung nur mit Recovery-Code möglich, und die Einrichtung ist gesperrt, bis NTP die Zeit gesetzt hat.</p>
+      <div id="twofa-off">
+        <p class="hint">Nach der Aktivierung wird beim Login zusätzlich ein 6-stelliger Code aus einer Authenticator-App verlangt (Google Authenticator, Aegis, Microsoft Authenticator, Passwortmanager). Du erhältst 8 Recovery-Codes für den Fall, dass App oder Uhrzeit nicht verfügbar sind.</p>
+        <form id="form-twofa-setup" class="row">
+          <label>Admin-Passwort <input name="password" type="password" required autocomplete="current-password"></label>
+          <button type="submit">2FA einrichten</button>
+        </form>
+      </div>
+      <div id="twofa-setup" class="hidden">
+        <h3>Schritt 1: QR-Code scannen</h3>
+        <div class="row" style="align-items:flex-start">
+          <div id="twofa-qr" class="qr"></div>
+          <div>
+            <p>Oder Geheimnis manuell eintragen:</p>
+            <p><code id="twofa-secret" class="secret"></code></p>
+            <p class="hint">Typ TOTP, SHA-1, 6 Stellen, 30 s</p>
+          </div>
+        </div>
+        <h3>Schritt 2: Recovery-Codes sichern</h3>
+        <p class="note warn">⚠ Diese Codes werden nur <strong>jetzt einmal</strong> angezeigt. Ausdrucken oder im Passwortmanager ablegen. Jeder Code funktioniert genau einmal und auch ohne synchrone Uhrzeit.</p>
+        <pre id="twofa-recovery" class="raw recovery"></pre>
+        <div class="row">
+          <button type="button" class="secondary" id="btn-twofa-copy">Codes kopieren</button>
+          <button type="button" class="secondary" id="btn-twofa-print">Drucken</button>
+        </div>
+        <h3>Schritt 3: Mit App-Code bestätigen</h3>
+        <form id="form-twofa-confirm" class="row">
+          <label>Aktueller Code aus der App <input name="code" required inputmode="numeric" pattern="[0-9]{6}" autocomplete="one-time-code"></label>
+          <button type="submit">2FA aktivieren</button>
+          <button type="button" class="secondary" id="btn-twofa-cancel">Abbrechen</button>
+        </form>
+      </div>
+      <div id="twofa-on" class="hidden">
+        <form id="form-twofa-manage">
+          <div class="grid2">
+            <label>Admin-Passwort <input name="password" type="password" required autocomplete="current-password"></label>
+            <label>App-Code oder Recovery-Code <input name="code" required autocomplete="one-time-code"></label>
+          </div>
+          <div class="row">
+            <button type="submit" data-act="recovery" class="secondary">Neue Recovery-Codes erzeugen</button>
+            <button type="submit" data-act="disable" class="danger">2FA deaktivieren</button>
+          </div>
+        </form>
+        <pre id="twofa-recovery-new" class="raw recovery hidden"></pre>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Gerät</h2>
+      <div class="row">
+        <button id="btn-reboot" class="secondary">Neustart</button>
+        <button id="btn-factory" class="danger">Werksreset</button>
+      </div>
+      <p class="hint">Werksreset löscht alle Einstellungen, Codes, das Zertifikat und das Admin-Passwort.</p>
+    </div>
+  </section>
+</main>
+
+<div id="toast" class="toast hidden"></div>
+<script src="/qrcode.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>

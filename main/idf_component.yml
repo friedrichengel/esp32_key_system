@@ -1,0 +1,11 @@
+## Abhängigkeiten aus der ESP Component Registry (werden nach managed_components/ geladen)
+dependencies:
+  idf: ">=6.1"
+  # mDNS: <hostname>.local
+  espressif/mdns: "^1.8"
+  # LittleFS für Zertifikat/Key, Protokolldatei, Backups auf der Partition "storage"
+  joltwallet/littlefs: "^1.19"
+  # WS2812 Status-LED an GPIO60
+  espressif/led_strip: "^3.0"
+  # JSON für die REST-API (in IDF 6 nicht mehr Teil des Frameworks)
+  espressif/cjson: "^1.7.19"

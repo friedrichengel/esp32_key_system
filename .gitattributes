@@ -1,0 +1,9 @@
+# Zeilenenden: Skripte und Build-Dateien immer LF, damit sie unter Linux/CI laufen
+* text=auto
+*.sh text eol=lf
+*.py text eol=lf
+*.yml text eol=lf
+*.csv text eol=lf
+CMakeLists.txt text eol=lf
+sdkconfig.defaults text eol=lf
+*.pem binary
