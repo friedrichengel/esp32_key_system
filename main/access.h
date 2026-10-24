@@ -11,3 +11,4 @@ esp_err_t access_init(void);                       /* startet Keypad und Relais 
 void      access_on_keypad_code(const char *code); /* vom Keypad-Task aufgerufen */
 bool      access_keypad_locked(uint32_t *remaining_s);
 uint32_t  access_fail_count(void);
+int       access_keypad_door(void);                /* Index der Tür, die das Keypad öffnet */

@@ -32,6 +32,7 @@ typedef struct {
     uint8_t  weekdays;             /* Bit0 = Montag ... Bit6 = Sonntag */
     uint16_t win_from_min;         /* Minuten seit Mitternacht, lokal */
     uint16_t win_to_min;           /* exklusiv; < win_from = über Mitternacht */
+    uint32_t doors;                /* Bitmaske: Bit n = Tür n+1 darf mit diesem Code geöffnet werden */
     uint32_t max_uses;             /* 0 = unbegrenzt */
     uint32_t uses;
     int64_t  last_used;
@@ -48,6 +49,7 @@ typedef enum {
     CODE_OUTSIDE_WINDOW,
     CODE_USES_EXHAUSTED,
     CODE_TIME_UNKNOWN,             /* Zeitprüfung nötig, aber Uhr nicht synchron */
+    CODE_WRONG_DOOR,               /* Code gilt nicht für diese Tür */
 } code_result_t;
 
 esp_err_t     codes_init(void);
@@ -59,8 +61,9 @@ esp_err_t     codes_update(const code_entry_t *e);
 esp_err_t     codes_delete(uint32_t id);
 esp_err_t     codes_clear(void);
 
-/* Prüft einen eingegebenen Code; bei CODE_OK werden uses/last_used erhöht und gespeichert. */
-code_result_t codes_check_and_use(const char *code, code_entry_t *matched);
+/* Prüft einen eingegebenen Code für Tür door_idx; bei CODE_OK werden uses/last_used erhöht und gespeichert. */
+code_result_t codes_check_and_use(const char *code, int door_idx, code_entry_t *matched);
+#define CODES_ALL_DOORS ((1u << CFG_MAX_DOORS) - 1)
 const char   *codes_result_text(code_result_t r);
 const char   *codes_type_name(code_type_t t);
 bool          codes_type_from_name(const char *s, code_type_t *out);

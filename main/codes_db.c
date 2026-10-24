@@ -39,6 +39,7 @@ cJSON *codes_entry_to_json(const code_entry_t *e)
     cJSON_AddNumberToObject(o, "weekdays", e->weekdays);
     cJSON_AddNumberToObject(o, "win_from", e->win_from_min);
     cJSON_AddNumberToObject(o, "win_to", e->win_to_min);
+    cJSON_AddNumberToObject(o, "doors", e->doors);
     cJSON_AddNumberToObject(o, "max_uses", e->max_uses);
     cJSON_AddNumberToObject(o, "uses", e->uses);
     cJSON_AddNumberToObject(o, "last_used", (double)e->last_used);
@@ -79,6 +80,7 @@ bool codes_entry_from_json(const cJSON *o, code_entry_t *e)
     e->weekdays = (uint8_t)jnum(o, "weekdays", 0x7F) & 0x7F;
     e->win_from_min = (uint16_t)jnum(o, "win_from", 0);
     e->win_to_min = (uint16_t)jnum(o, "win_to", 0);
+    e->doors = (uint32_t)jnum(o, "doors", CODES_ALL_DOORS) & CODES_ALL_DOORS;   /* alte Backups: alle Türen */
     e->max_uses = (uint32_t)jnum(o, "max_uses", 0);
     e->uses = (uint32_t)jnum(o, "uses", 0);
     e->last_used = (int64_t)jnum(o, "last_used", 0);
@@ -289,9 +291,10 @@ static code_result_t check_entry(const code_entry_t *e, time_t now, bool time_ok
     return CODE_OK;
 }
 
-code_result_t codes_check_and_use(const char *code, code_entry_t *matched)
+code_result_t codes_check_and_use(const char *code, int door_idx, code_entry_t *matched)
 {
     if (!codes_valid_code_string(code)) return CODE_UNKNOWN;
+    if (door_idx < 0 || door_idx >= CFG_MAX_DOORS) return CODE_WRONG_DOOR;
     bool time_ok = time_sync_is_valid();
     time_t now = time(NULL);
     code_result_t res = CODE_UNKNOWN;
@@ -300,6 +303,7 @@ code_result_t codes_check_and_use(const char *code, code_entry_t *matched)
     for (size_t i = 0; i < s_count; i++) {
         if (strcmp(s_codes[i].code, code) != 0) continue;
         res = check_entry(&s_codes[i], now, time_ok);
+        if (res == CODE_OK && !(s_codes[i].doors & (1u << door_idx))) res = CODE_WRONG_DOOR;
         if (res == CODE_OK) {
             s_codes[i].uses++;
             s_codes[i].last_used = time_ok ? now : 0;
@@ -323,6 +327,7 @@ const char *codes_result_text(code_result_t r)
     case CODE_OUTSIDE_WINDOW: return "ausserhalb des Zeitfensters";
     case CODE_USES_EXHAUSTED: return "Nutzungen aufgebraucht";
     case CODE_TIME_UNKNOWN:   return "Uhrzeit nicht synchron, Zeitcode abgelehnt";
+    case CODE_WRONG_DOOR:     return "Code gilt nicht fuer diese Tuer";
     }
     return "?";
 }

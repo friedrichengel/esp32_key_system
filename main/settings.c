@@ -1,5 +1,6 @@
 #include "settings.h"
 
+#include <stdio.h>
 #include <string.h>
 #include "esp_log.h"
 #include "nvs.h"
@@ -12,6 +13,17 @@ static const char *NVS_NS  = "keysys";
 static const char *NVS_KEY = "cfg";
 
 settings_t g_settings;
+
+void settings_door_defaults(settings_door_t *d, int idx)
+{
+    memset(d, 0, sizeof(*d));
+    d->enabled = (idx == 0);                    /* nur Tür 1 ab Werk aktiv */
+    snprintf(d->name, sizeof(d->name), "Tür %d", idx + 1);
+    d->relay_pulse_ms = CFG_RELAY_PULSE_MS_DEFAULT;
+    d->relay_active_low = CFG_RELAY_ACTIVE_LOW;
+    d->door_contact_enable = false;
+    d->exit_button_enable = false;
+}
 
 void settings_set_defaults(settings_t *s)
 {
@@ -31,10 +43,9 @@ void settings_set_defaults(settings_t *s)
     strlcpy(s->net.ntp2, CFG_NTP_SERVER_2_DEFAULT, sizeof(s->net.ntp2));
     strlcpy(s->net.tz, CFG_TZ_DEFAULT, sizeof(s->net.tz));
 
-    s->door.relay_pulse_ms = CFG_RELAY_PULSE_MS_DEFAULT;
-    s->door.relay_active_low = CFG_RELAY_ACTIVE_LOW;
-    s->door.door_contact_enable = false;
-    s->door.exit_button_enable = false;
+    for (int i = 0; i < CFG_MAX_DOORS; i++) {
+        settings_door_defaults(&s->doors[i], i);
+    }
 
     s->keypad.baud = CFG_KEYPAD_BAUD_DEFAULT;
     s->keypad.parity = 0;
@@ -44,6 +55,7 @@ void settings_set_defaults(settings_t *s)
     s->keypad.fixed_len = 6;
     s->keypad.timeout_ms = CFG_KEYPAD_TIMEOUT_MS;
     s->keypad.learn_mode = false;
+    s->keypad.door = 0;                         /* Keypad öffnet Tür 1 */
 
     strlcpy(s->admin.user, "admin", sizeof(s->admin.user));
     s->admin.pw_iterations = 0;

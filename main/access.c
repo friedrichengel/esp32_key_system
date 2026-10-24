@@ -34,6 +34,12 @@ uint32_t access_fail_count(void)
     return s_fail_count;
 }
 
+int access_keypad_door(void)
+{
+    int d = g_settings.keypad.door;
+    return (d >= 0 && d < CFG_MAX_DOORS) ? d : 0;
+}
+
 static void on_failure(code_result_t res, size_t code_len)
 {
     s_fail_count++;
@@ -74,17 +80,23 @@ void access_on_keypad_code(const char *code)
         status_led_set(LED_OK);
     }
 
+    int door = access_keypad_door();
+    if (!door_is_enabled(door)) {
+        event_log(EV_DENIED, "Keypad: zugeordnete Tuer %d ist deaktiviert", door + 1);
+        status_led_flash(LED_DENIED, 800);
+        return;
+    }
     code_entry_t m;
-    code_result_t res = codes_check_and_use(code, &m);
+    code_result_t res = codes_check_and_use(code, door, &m);
     if (res != CODE_OK) {
         on_failure(res, len);
         return;
     }
     s_fail_count = 0;
     s_lock_s = CFG_KEYPAD_LOCK_BASE_S;
-    event_log(EV_ACCESS, "Zutritt: '%s' (#%" PRIu32 ", %s%s) per Keypad", m.name, m.id, codes_type_name(m.type),
-              m.max_uses ? (m.uses >= m.max_uses ? ", letzte Nutzung" : "") : "");
-    door_open(m.name, 0);
+    event_log(EV_ACCESS, "Zutritt Tuer %d: '%s' (#%" PRIu32 ", %s%s) per Keypad", door + 1, m.name, m.id,
+              codes_type_name(m.type), m.max_uses ? (m.uses >= m.max_uses ? ", letzte Nutzung" : "") : "");
+    door_open(door, m.name, 0);
 }
 
 esp_err_t access_init(void)

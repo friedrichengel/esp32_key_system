@@ -10,8 +10,9 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "esp_err.h"
+#include "config.h"
 
-#define SETTINGS_VERSION        2
+#define SETTINGS_VERSION        3               /* v3: doors[], keypad.door (24.10.2026) */
 #define SETTINGS_TOTP_SECRET_LEN 20
 #define SETTINGS_RECOVERY_COUNT 8
 #define SETTINGS_STR_SHORT      32
@@ -50,7 +51,10 @@ typedef struct {
     char     tz[SETTINGS_STR_TZ];           /* POSIX-TZ-String */
 } settings_network_t;
 
+/* Eine Tür = ein Relais, optional Türkontakt und Austaster (Pins in config.h) */
 typedef struct {
+    bool     enabled;
+    char     name[SETTINGS_STR_SHORT];
     uint16_t relay_pulse_ms;
     bool     relay_active_low;
     bool     door_contact_enable;
@@ -72,6 +76,7 @@ typedef struct {
     uint8_t  fixed_len;
     uint16_t timeout_ms;
     bool     learn_mode;                    /* Rohdaten auf der System-Seite zeigen  */
+    uint8_t  door;                          /* Index 0..CFG_MAX_DOORS-1 der Tür, die das Keypad öffnet */
 } settings_keypad_t;
 
 typedef struct {
@@ -93,7 +98,7 @@ typedef struct {
 typedef struct {
     uint32_t           version;
     settings_network_t net;
-    settings_door_t    door;
+    settings_door_t    doors[CFG_MAX_DOORS];
     settings_keypad_t  keypad;
     settings_admin_t   admin;
     settings_twofa_t   twofa;
@@ -105,4 +110,5 @@ extern settings_t g_settings;
 esp_err_t settings_init(void);            /* lädt aus NVS oder legt Defaults an    */
 esp_err_t settings_save(void);            /* schreibt g_settings nach NVS          */
 void      settings_set_defaults(settings_t *s);
+void      settings_door_defaults(settings_door_t *d, int idx);
 esp_err_t settings_factory_reset(void);   /* löscht den NVS-Namespace              */

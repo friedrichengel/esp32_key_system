@@ -55,8 +55,10 @@ main/
 ├── web_server.[ch]     esp_https_server + Redirect-Server :80, REST-API, statische Dateien (gzip)
 ├── codes_db.[ch]       Codes als /storage/codes.json, Prüfung (Gültigkeit, Fenster, Nutzungen)
 ├── keypad_rs232.[ch]   UART1-Task, Rahmen-Parser (Terminator/feste Länge/Timeout), Rohdaten für Lernmodus
-├── door_relay.[ch]     Relais-Impuls per esp_timer, Türkontakt/REX entprellt
-├── access.[ch]         Keypad-Code → codes_check → door_open, Sperre nach Fehlversuchen
+├── door_relay.[ch]     bis zu CFG_MAX_DOORS Türen: Relais-Impuls per esp_timer, Türkontakt/REX entprellt
+├── api_tokens.[ch]     Bearer-Token für Drittsysteme: SHA-256-Hash in /storage/tokens.json, Türmaske, Rechte,
+│                       IP-Regel, Ablauf, Rate-Limit je Quell-IP; Klartext nur einmal bei Erzeugung
+├── access.[ch]         Keypad-Code → codes_check (Tür des Keypads) → door_open, Sperre nach Fehlversuchen
 ├── ota_update.[ch]     esp_ota_* mit Signaturprüfung, Rollback, Info
 └── web/                index.html, app.js, style.css (Vanilla, deutsch), qrcode.js (vendored, MIT, Kazuhiko Arase)
 tools/                  embed_web_assets.py, pio_pre_build.py, sign_firmware.py, gen_signing_key.sh, sign_firmware.sh
@@ -70,8 +72,8 @@ keys/                   nur .gitkeep; private Schlüssel lokal
 |---|---|---|
 | Ethernet MDC/MDIO/PHY-Reset | 5 / 6 / 7 | RGMII-Daten GPIO8–19 fest (IDF-Default für S31) |
 | Keypad UART1 RX/TX | 38 / 37 | über MAX3232 |
-| Relais | 40 | Polarität in Settings (`relay_active_low`) |
-| Türkontakt / Austaster | 42 / 39 | gegen GND, interner Pull-up |
+| Tür 1: Relais / Kontakt / REX | 40 / 42 / 39 | Polarität je Tür in Settings (`relay_active_low`) |
+| Tür 2 / 3 / 4: Relais, Kontakt, REX | 43,44,45 / 46,47,48 / 49,36,35 | Türen 2–4 ab Werk deaktiviert, Pins dann unberührt |
 | WS2812 / BOOT | 60 / 61 | onboard |
 
 ## Konventionen
@@ -79,10 +81,11 @@ keys/                   nur .gitkeep; private Schlüssel lokal
 - Pins und Grenzen nur in `config.h`; Laufzeitwerte nur über `g_settings` + `settings_save()`.
 - Jede sicherheitsrelevante Aktion über `event_log(EV_*, ...)`; **Codes nie protokollieren** (nur Länge/Name).
 - Zufall nur über `esp_fill_random()` / PSA. `rng_init()` in `main.c` (`bootloader_random_enable()`) muss der erste Aufruf bleiben, sonst liefert der S31 ohne Wi-Fi nur Pseudozufall. **Keinen ADC verwenden** (Konflikt mit der Entropiequelle).
-- Schreibende API-Routen verlangen Session-Cookie **und** Header `X-CSRF-Token` (`require_auth_csrf`).
+- Schreibende API-Routen verlangen Session-Cookie **und** Header `X-CSRF-Token` (`require_auth_csrf`). Ausnahme: `/api/v1/*` für Drittsysteme nutzt `Authorization: Bearer` (`require_bearer`), kein Cookie, kein CSRF.
+- Türen: intern Index 0..CFG_MAX_DOORS-1, in API/UI/Protokoll 1-basiert. Genau ein Keypad je Gerät (`g_settings.keypad.door`).
 - Deutsch in UI und Protokolltexten, ASCII-Umschreibungen (ue/oe/ae) in Log-Strings, Umlaute in HTML.
 - Compiler-Warnungen sind Fehler (`-Werror` im IDF-Default), insbesondere `format-truncation`.
-- `SETTINGS_VERSION` bei Strukturänderungen am NVS-Blob erhöhen; ohne Migrationscode fällt das Gerät auf Defaults zurück (Stand v2, noch keine Geräte im Feld).
+- `SETTINGS_VERSION` bei Strukturänderungen am NVS-Blob erhöhen; ohne Migrationscode fällt das Gerät auf Defaults zurück (Stand v3, noch keine Geräte im Feld).
 - Neue Web-Dateien in `main/CMakeLists.txt` (WEB_FILES), `tools/pio_pre_build.py` (FILES) und als Route in `web_server.c` eintragen.
 
 ## Stand

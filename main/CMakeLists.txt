@@ -39,6 +39,7 @@ idf_component_register(
         "door_relay.c"
         "keypad_rs232.c"
         "access.c"
+        "api_tokens.c"
         "ota_update.c"
     INCLUDE_DIRS
         "."

@@ -31,6 +31,8 @@
 #include "web_server.h"
 #include "codes_db.h"
 #include "access.h"
+#include "door_relay.h"
+#include "api_tokens.h"
 #include "ota_update.h"
 
 static const char *TAG = "main";
@@ -44,21 +46,6 @@ static void rng_init(void)
      * Deshalb die Entropiequelle dauerhaft einschalten. Achtung: nicht kompatibel mit
      * gleichzeitiger ADC-Nutzung; die Firmware verwendet keinen ADC. */
     bootloader_random_enable();
-}
-
-static void relay_safe_init(void)
-{
-    /* Relais zuerst in den sicheren Zustand bringen, bevor irgendetwas anderes läuft.
-     * Die Polarität ist noch nicht aus NVS bekannt, deshalb der Compile-Zeit-Default. */
-    gpio_config_t io = {
-        .pin_bit_mask = 1ULL << CFG_RELAY_GPIO,
-        .mode = GPIO_MODE_OUTPUT,
-        .pull_up_en = GPIO_PULLUP_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE,
-    };
-    gpio_config(&io);
-    gpio_set_level(CFG_RELAY_GPIO, CFG_RELAY_ACTIVE_LOW ? 1 : 0);
 }
 
 static void nvs_init(void)
@@ -127,7 +114,7 @@ static void log_banner(void)
 void app_main(void)
 {
     rng_init();                 /* vor allem, was Zufall braucht */
-    relay_safe_init();
+    door_relay_safe_init();     /* alle Relais sicher aus, bevor irgendetwas anderes laeuft */
     nvs_init();
     log_banner();
 
@@ -139,8 +126,7 @@ void app_main(void)
     status_led_init();
     time_sync_init();
 
-    /* Relais-Polarität jetzt aus den Settings */
-    gpio_set_level(CFG_RELAY_GPIO, g_settings.door.relay_active_low ? 1 : 0);
+    door_apply_settings();      /* Relais-Polaritaet jetzt aus den Settings (NVS gelesen) */
 
     event_log(EV_SYSTEM, "Start, Firmware %s, Reset-Grund %d",
               esp_app_get_description()->version, (int)esp_reset_reason());
@@ -152,6 +138,7 @@ void app_main(void)
 
     /* Zutritt: Codes laden, Relais + Keypad starten (unabhängig vom Netz) */
     ESP_ERROR_CHECK(codes_init());
+    ESP_ERROR_CHECK(api_tokens_init());
     access_init();
 
     /* Zertifikat laden/erzeugen (braucht LittleFS), dann HTTPS-Server */

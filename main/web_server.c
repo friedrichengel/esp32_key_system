@@ -30,6 +30,10 @@
 #include "keypad_rs232.h"
 #include "access.h"
 #include "ota_update.h"
+#include "api_tokens.h"
+
+#include <strings.h>
+#include "lwip/sockets.h"
 
 /* Eingebettete Web-UI (gzip), erzeugt von tools/embed_web_assets.py */
 #include "web_assets_gen.h"
@@ -286,18 +290,38 @@ static const char *net_from_json(const cJSON *j, settings_network_t *n)
     return NULL;
 }
 
-static cJSON *door_to_json(const settings_door_t *d)
+static cJSON *door_cfg_to_json(int idx)
 {
+    const settings_door_t *d = &g_settings.doors[idx];
     cJSON *o = cJSON_CreateObject();
+    cJSON_AddNumberToObject(o, "door", idx + 1);
+    cJSON_AddBoolToObject(o, "enabled", d->enabled);
+    cJSON_AddStringToObject(o, "name", d->name);
     cJSON_AddNumberToObject(o, "relay_pulse_ms", d->relay_pulse_ms);
     cJSON_AddBoolToObject(o, "relay_active_low", d->relay_active_low);
     cJSON_AddBoolToObject(o, "door_contact_enable", d->door_contact_enable);
     cJSON_AddBoolToObject(o, "exit_button_enable", d->exit_button_enable);
+    cJSON *pins = cJSON_AddObjectToObject(o, "pins");
+    cJSON_AddNumberToObject(pins, "relay", door_relay_gpio(idx));
+    cJSON_AddNumberToObject(pins, "contact", door_contact_gpio(idx));
+    cJSON_AddNumberToObject(pins, "rex", door_rex_gpio(idx));
     return o;
+}
+
+static cJSON *doors_to_json(void)
+{
+    cJSON *arr = cJSON_CreateArray();
+    for (int i = 0; i < CFG_MAX_DOORS; i++) {
+        cJSON_AddItemToArray(arr, door_cfg_to_json(i));
+    }
+    return arr;
 }
 
 static void door_from_json(const cJSON *d, settings_door_t *s)
 {
+    s->enabled = jbool(d, "enabled", s->enabled);
+    const char *name = jstr(d, "name", NULL);
+    if (name && name[0]) copy_str(s->name, sizeof(s->name), name);
     int pulse = jint(d, "relay_pulse_ms", s->relay_pulse_ms);
     if (pulse < CFG_RELAY_PULSE_MS_MIN) pulse = CFG_RELAY_PULSE_MS_MIN;
     if (pulse > CFG_RELAY_PULSE_MS_MAX) pulse = CFG_RELAY_PULSE_MS_MAX;
@@ -305,6 +329,60 @@ static void door_from_json(const cJSON *d, settings_door_t *s)
     s->relay_active_low = jbool(d, "relay_active_low", s->relay_active_low);
     s->door_contact_enable = jbool(d, "door_contact_enable", s->door_contact_enable);
     s->exit_button_enable = jbool(d, "exit_button_enable", s->exit_button_enable);
+}
+
+/* Akzeptiert ein Array [{door:n, ...}] oder (Backups vor v2) ein einzelnes Objekt für Tür 1 */
+static void doors_from_json(const cJSON *j, settings_door_t doors[CFG_MAX_DOORS])
+{
+    if (cJSON_IsArray(j)) {
+        int pos = 0;
+        cJSON *it;
+        cJSON_ArrayForEach(it, j) {
+            if (cJSON_IsObject(it)) {
+                int n = jint(it, "door", pos + 1);
+                if (n >= 1 && n <= CFG_MAX_DOORS) door_from_json(it, &doors[n - 1]);
+            }
+            pos++;
+        }
+    } else if (cJSON_IsObject(j)) {
+        door_from_json(j, &doors[0]);
+    }
+}
+
+/* Kurzliste der Türen (Name/aktiv) für Codes- und Token-Seite */
+static cJSON *doors_brief_json(void)
+{
+    cJSON *arr = cJSON_CreateArray();
+    for (int i = 0; i < CFG_MAX_DOORS; i++) {
+        cJSON *d = cJSON_CreateObject();
+        cJSON_AddNumberToObject(d, "door", i + 1);
+        cJSON_AddStringToObject(d, "name", door_name(i));
+        cJSON_AddBoolToObject(d, "enabled", door_is_enabled(i));
+        cJSON_AddItemToArray(arr, d);
+    }
+    return arr;
+}
+
+static cJSON *door_status_json(int i)
+{
+    cJSON *d = cJSON_CreateObject();
+    cJSON_AddNumberToObject(d, "door", i + 1);
+    cJSON_AddStringToObject(d, "name", door_name(i));
+    cJSON_AddBoolToObject(d, "enabled", door_is_enabled(i));
+    cJSON_AddBoolToObject(d, "relay_active", door_relay_active(i));
+    cJSON_AddBoolToObject(d, "contact_enabled", g_settings.doors[i].door_contact_enable);
+    cJSON_AddBoolToObject(d, "contact_closed", door_contact_closed(i));
+    cJSON_AddNumberToObject(d, "last_open_uptime_s", (double)door_last_open_uptime_s(i));
+    return d;
+}
+
+static cJSON *doors_status_json(void)
+{
+    cJSON *arr = cJSON_CreateArray();
+    for (int i = 0; i < CFG_MAX_DOORS; i++) {
+        cJSON_AddItemToArray(arr, door_status_json(i));
+    }
+    return arr;
 }
 
 static const char *ctrl_char_name(char c, char *buf)
@@ -337,6 +415,7 @@ static cJSON *keypad_to_json(const settings_keypad_t *k)
     cJSON_AddNumberToObject(o, "fixed_len", k->fixed_len);
     cJSON_AddNumberToObject(o, "timeout_ms", k->timeout_ms);
     cJSON_AddBoolToObject(o, "learn_mode", k->learn_mode);
+    cJSON_AddNumberToObject(o, "door", k->door + 1);
     return o;
 }
 
@@ -355,6 +434,8 @@ static void keypad_from_json(const cJSON *k, settings_keypad_t *s)
     int to = jint(k, "timeout_ms", s->timeout_ms);
     if (to >= 200 && to <= 10000) s->timeout_ms = to;
     s->learn_mode = jbool(k, "learn_mode", s->learn_mode);
+    int dn = jint(k, "door", s->door + 1);
+    if (dn >= 1 && dn <= CFG_MAX_DOORS) s->door = (uint8_t)(dn - 1);
 }
 
 /* ========================================================================
@@ -715,18 +796,17 @@ static esp_err_t h_status_get(httpd_req_t *req)
 
     uint32_t lock_rem = 0;
     bool locked = access_keypad_locked(&lock_rem);
-    cJSON *door = cJSON_AddObjectToObject(o, "door");
-    cJSON_AddBoolToObject(door, "relay_active", door_relay_active());
-    cJSON_AddBoolToObject(door, "contact_enabled", g_settings.door.door_contact_enable);
-    cJSON_AddBoolToObject(door, "contact_closed", door_contact_closed());
-    cJSON_AddBoolToObject(door, "keypad_locked", locked);
-    cJSON_AddNumberToObject(door, "keypad_lock_remaining_s", lock_rem);
-    cJSON_AddNumberToObject(door, "keypad_fail_count", access_fail_count());
-    cJSON_AddNumberToObject(door, "keypad_rx_count", keypad_rx_count());
-    cJSON_AddNumberToObject(door, "keypad_last_rx_uptime_s", (double)keypad_last_rx_uptime_s());
-    cJSON_AddNumberToObject(door, "last_open_uptime_s", (double)door_last_open_uptime_s());
-    cJSON_AddNumberToObject(door, "codes_count", codes_count());
-    cJSON_AddBoolToObject(door, "learn_mode", g_settings.keypad.learn_mode);
+    cJSON *kp = cJSON_AddObjectToObject(o, "keypad");
+    cJSON_AddNumberToObject(kp, "door", access_keypad_door() + 1);
+    cJSON_AddBoolToObject(kp, "locked", locked);
+    cJSON_AddNumberToObject(kp, "lock_remaining_s", lock_rem);
+    cJSON_AddNumberToObject(kp, "fail_count", access_fail_count());
+    cJSON_AddNumberToObject(kp, "rx_count", keypad_rx_count());
+    cJSON_AddNumberToObject(kp, "last_rx_uptime_s", (double)keypad_last_rx_uptime_s());
+    cJSON_AddBoolToObject(kp, "learn_mode", g_settings.keypad.learn_mode);
+    cJSON_AddItemToObject(o, "doors", doors_status_json());
+    cJSON_AddNumberToObject(o, "codes_count", codes_count());
+    cJSON_AddNumberToObject(o, "tokens_count", api_tokens_count());
     return send_json(req, o);
 }
 
@@ -873,6 +953,7 @@ static esp_err_t h_codes_get(httpd_req_t *req)
     cJSON_AddItemToObject(o, "codes", codes_to_json());
     cJSON_AddNumberToObject(o, "max", CFG_CODES_MAX);
     cJSON_AddBoolToObject(o, "time_valid", time_sync_is_valid());
+    cJSON_AddItemToObject(o, "doors", doors_brief_json());
     return send_json(req, o);
 }
 
@@ -950,11 +1031,26 @@ static esp_err_t h_door_open(httpd_req_t *req)
 {
     auth_session_t *s = require_auth_csrf(req);
     if (!s) return ESP_OK;
+    int n = 0;
+    if (req->content_len > 0) {
+        cJSON *j = read_json(req);
+        if (j) {
+            n = jint(j, "door", 0);
+            cJSON_Delete(j);
+        }
+    }
+    int idx = n ? n - 1 : access_keypad_door();
     char reason[48];
     snprintf(reason, sizeof(reason), "Web-UI %s", s->user);
-    esp_err_t err = door_open(reason, 0);
+    esp_err_t err = door_open(idx, reason, 0);
+    if (err == ESP_ERR_INVALID_ARG) return send_error(req, "404 Not Found", "Tuer nicht vorhanden");
+    if (err == ESP_ERR_INVALID_STATE) return send_error(req, "409 Conflict", "Tuer ist deaktiviert");
     if (err != ESP_OK) return send_error(req, "500 Internal Server Error", "Relais konnte nicht geschaltet werden");
-    return send_ok(req);
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddBoolToObject(o, "ok", true);
+    cJSON_AddNumberToObject(o, "door", idx + 1);
+    cJSON_AddStringToObject(o, "name", door_name(idx));
+    return send_json(req, o);
 }
 
 static esp_err_t h_keypad_raw(httpd_req_t *req)
@@ -999,13 +1095,11 @@ static esp_err_t h_system_get(httpd_req_t *req)
 {
     if (!require_auth(req)) return ESP_OK;
     cJSON *o = cJSON_CreateObject();
-    cJSON_AddItemToObject(o, "door", door_to_json(&g_settings.door));
+    cJSON_AddItemToObject(o, "doors", doors_to_json());
+    cJSON_AddNumberToObject(o, "max_doors", CFG_MAX_DOORS);
     cJSON_AddItemToObject(o, "keypad", keypad_to_json(&g_settings.keypad));
     cJSON_AddStringToObject(o, "admin_user", g_settings.admin.user);
     cJSON *pins = cJSON_AddObjectToObject(o, "pins");
-    cJSON_AddNumberToObject(pins, "relay", CFG_RELAY_GPIO);
-    cJSON_AddNumberToObject(pins, "door_contact", CFG_DOOR_CONTACT_GPIO);
-    cJSON_AddNumberToObject(pins, "exit_button", CFG_EXIT_BUTTON_GPIO);
     cJSON_AddNumberToObject(pins, "keypad_rx", CFG_KEYPAD_RX_GPIO);
     cJSON_AddNumberToObject(pins, "keypad_tx", CFG_KEYPAD_TX_GPIO);
     return send_json(req, o);
@@ -1016,16 +1110,19 @@ static esp_err_t h_system_post(httpd_req_t *req)
     if (!require_auth_csrf(req)) return ESP_OK;
     cJSON *j = read_json(req);
     if (!j) return send_error(req, "400 Bad Request", "JSON erwartet");
-    cJSON *d = cJSON_GetObjectItemCaseSensitive(j, "door");
-    if (cJSON_IsObject(d)) door_from_json(d, &g_settings.door);
+    cJSON *d = cJSON_GetObjectItemCaseSensitive(j, "doors");
+    if (!d) d = cJSON_GetObjectItemCaseSensitive(j, "door");
+    if (d) doors_from_json(d, g_settings.doors);
     cJSON *k = cJSON_GetObjectItemCaseSensitive(j, "keypad");
     if (cJSON_IsObject(k)) keypad_from_json(k, &g_settings.keypad);
     cJSON_Delete(j);
     if (settings_save() != ESP_OK) return send_error(req, "500 Internal Server Error", "Speichern fehlgeschlagen");
     door_apply_settings();
     keypad_apply_settings();
-    event_log(EV_CONFIG, "Systemeinstellungen geaendert (Relais %u ms, Keypad %" PRIu32 " Bd%s)",
-              g_settings.door.relay_pulse_ms, g_settings.keypad.baud, g_settings.keypad.learn_mode ? ", Lernmodus" : "");
+    int active = 0;
+    for (int i = 0; i < CFG_MAX_DOORS; i++) active += g_settings.doors[i].enabled;
+    event_log(EV_CONFIG, "Systemeinstellungen geaendert (%d Tuer(en) aktiv, Keypad -> Tuer %d, %" PRIu32 " Bd%s)",
+              active, access_keypad_door() + 1, g_settings.keypad.baud, g_settings.keypad.learn_mode ? ", Lernmodus" : "");
     return send_ok(req);
 }
 
@@ -1066,6 +1163,7 @@ static esp_err_t h_factory_reset_post(httpd_req_t *req)
     settings_factory_reset();
     cert_store_delete();
     codes_clear();
+    api_tokens_clear();
     web_server_schedule_reboot(1500);
     return send_ok(req);
 }
@@ -1078,12 +1176,12 @@ static esp_err_t h_backup_get(httpd_req_t *req)
     if (!require_auth(req)) return ESP_OK;
     cJSON *o = cJSON_CreateObject();
     cJSON_AddStringToObject(o, "format", "esp32_key_system_backup");
-    cJSON_AddNumberToObject(o, "version", 1);
+    cJSON_AddNumberToObject(o, "version", 2);
     cJSON_AddStringToObject(o, "firmware", esp_app_get_description()->version);
     cJSON_AddNumberToObject(o, "created", (double)(time_sync_is_valid() ? time(NULL) : 0));
     cJSON *st = cJSON_AddObjectToObject(o, "settings");
     cJSON_AddItemToObject(st, "net", net_to_json(&g_settings.net));
-    cJSON_AddItemToObject(st, "door", door_to_json(&g_settings.door));
+    cJSON_AddItemToObject(st, "doors", doors_to_json());
     cJSON_AddItemToObject(st, "keypad", keypad_to_json(&g_settings.keypad));
     cJSON_AddItemToObject(o, "codes", codes_to_json());
     char fname[40 + SETTINGS_STR_HOST];
@@ -1111,8 +1209,9 @@ static esp_err_t h_restore_post(httpd_req_t *req)
             const char *err = net_from_json(net, &ns.net);
             if (err) { cJSON_Delete(j); return send_error(req, "400 Bad Request", err); }
         }
-        cJSON *d = cJSON_GetObjectItemCaseSensitive(st, "door");
-        if (cJSON_IsObject(d)) door_from_json(d, &ns.door);
+        cJSON *d = cJSON_GetObjectItemCaseSensitive(st, "doors");
+        if (!d) d = cJSON_GetObjectItemCaseSensitive(st, "door");
+        if (d) doors_from_json(d, ns.doors);
         cJSON *k = cJSON_GetObjectItemCaseSensitive(st, "keypad");
         if (cJSON_IsObject(k)) keypad_from_json(k, &ns.keypad);
     }
@@ -1190,6 +1289,267 @@ static esp_err_t h_firmware_rollback(httpd_req_t *req)
     if (err == ESP_ERR_NOT_FOUND) return send_error(req, "409 Conflict", "In der anderen Partition liegt keine Firmware");
     if (err != ESP_OK) return send_error(req, "500 Internal Server Error", esp_err_to_name(err));
     return send_ok_reboot(req);
+}
+
+/* ========================================================================
+ * API: Token-Verwaltung (Admin: Session + CSRF)
+ * ====================================================================== */
+static void uri_last_segment(const httpd_req_t *req, char *out, size_t len)
+{
+    char path[CONFIG_HTTPD_MAX_URI_LEN + 1];
+    strlcpy(path, req->uri, sizeof(path));
+    char *q = strchr(path, '?');
+    if (q) *q = '\0';
+    char *slash = strrchr(path, '/');
+    strlcpy(out, slash ? slash + 1 : "", len);
+}
+
+/* Felder eines Tokens aus JSON übernehmen (Ausgangswert = *t). Fehlertext oder NULL. */
+static const char *token_from_json(const cJSON *j, api_token_t *t)
+{
+    copy_str(t->name, sizeof(t->name), jstr(j, "name", t->name));
+    if (!t->name[0]) return "Name fehlt";
+    t->doors = (uint32_t)jint(j, "doors", (int)t->doors) & CODES_ALL_DOORS;
+    if (!t->doors) return "Mindestens eine Tuer waehlen";
+    t->can_open = jbool(j, "can_open", t->can_open);
+    t->can_status = jbool(j, "can_status", t->can_status);
+    t->enabled = jbool(j, "enabled", t->enabled);
+    copy_str(t->allow_ip, sizeof(t->allow_ip), jstr(j, "allow_ip", t->allow_ip));
+    if (!api_tokens_valid_ip_rule(t->allow_ip)) {
+        return "Quelladresse ungueltig (z. B. 192.168.1.10, 192.168.1.0/24 oder fd00::/64)";
+    }
+    cJSON *ex = cJSON_GetObjectItemCaseSensitive(j, "expires_at");
+    if (cJSON_IsNumber(ex)) t->expires_at = ex->valuedouble < 0 ? 0 : (int64_t)ex->valuedouble;
+    return NULL;
+}
+
+static esp_err_t h_tokens_get(httpd_req_t *req)
+{
+    if (!require_auth(req)) return ESP_OK;
+    api_token_t *list = malloc(sizeof(api_token_t) * CFG_TOKENS_MAX);
+    if (!list) return send_error(req, "500 Internal Server Error", "Speicher");
+    size_t n = api_tokens_list(list, CFG_TOKENS_MAX);
+    cJSON *o = cJSON_CreateObject();
+    cJSON *arr = cJSON_AddArrayToObject(o, "tokens");
+    for (size_t i = 0; i < n; i++) {
+        cJSON_AddItemToArray(arr, api_tokens_entry_to_json(&list[i]));
+    }
+    free(list);
+    cJSON_AddNumberToObject(o, "max", CFG_TOKENS_MAX);
+    cJSON_AddBoolToObject(o, "time_valid", time_sync_is_valid());
+    cJSON_AddItemToObject(o, "doors", doors_brief_json());
+    return send_json(req, o);
+}
+
+static esp_err_t h_tokens_post(httpd_req_t *req)
+{
+    auth_session_t *s = require_auth_csrf(req);
+    if (!s) return ESP_OK;
+    cJSON *j = read_json(req);
+    if (!j) return send_error(req, "400 Bad Request", "JSON erwartet");
+    api_token_t t = { .doors = CODES_ALL_DOORS, .can_open = true, .can_status = true, .enabled = true };
+    const char *err = token_from_json(j, &t);
+    cJSON_Delete(j);
+    if (err) return send_error(req, "400 Bad Request", err);
+
+    char plain[TOKEN_PLAIN_LEN + 1];
+    esp_err_t e = api_tokens_create(&t, plain, sizeof(plain));
+    if (e == ESP_ERR_NO_MEM) return send_error(req, "507 Insufficient Storage", "Maximale Anzahl Token erreicht");
+    if (e != ESP_OK) return send_error(req, "500 Internal Server Error", "Token konnte nicht angelegt werden");
+    event_log(EV_CONFIG, "API-Token '%s' (%s) angelegt von %s", t.name, t.id, s->user);
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddBoolToObject(o, "ok", true);
+    cJSON_AddStringToObject(o, "token", plain);          /* einzige Stelle, an der der Klartext existiert */
+    cJSON_AddItemToObject(o, "entry", api_tokens_entry_to_json(&t));
+    memset(plain, 0, sizeof(plain));
+    return send_json(req, o);
+}
+
+static esp_err_t h_tokens_put(httpd_req_t *req)
+{
+    auth_session_t *s = require_auth_csrf(req);
+    if (!s) return ESP_OK;
+    char id[32];
+    uri_last_segment(req, id, sizeof(id));
+    api_token_t t;
+    if (!api_tokens_get(id, &t)) return send_error(req, "404 Not Found", "Token nicht gefunden");
+    cJSON *j = read_json(req);
+    if (!j) return send_error(req, "400 Bad Request", "JSON erwartet");
+    const char *err = token_from_json(j, &t);
+    cJSON_Delete(j);
+    if (err) return send_error(req, "400 Bad Request", err);
+    if (api_tokens_update(&t) != ESP_OK) return send_error(req, "500 Internal Server Error", "Speichern fehlgeschlagen");
+    event_log(EV_CONFIG, "API-Token '%s' (%s) geaendert von %s%s", t.name, t.id, s->user, t.enabled ? "" : ", gesperrt");
+    return send_ok(req);
+}
+
+static esp_err_t h_tokens_delete(httpd_req_t *req)
+{
+    auth_session_t *s = require_auth_csrf(req);
+    if (!s) return ESP_OK;
+    char id[32];
+    uri_last_segment(req, id, sizeof(id));
+    api_token_t t;
+    bool found = api_tokens_get(id, &t);
+    esp_err_t e = api_tokens_delete(id);
+    if (e == ESP_ERR_NOT_FOUND) return send_error(req, "404 Not Found", "Token nicht gefunden");
+    if (e != ESP_OK) return send_error(req, "500 Internal Server Error", "Speichern fehlgeschlagen");
+    if (found) event_log(EV_CONFIG, "API-Token '%s' (%s) geloescht von %s", t.name, id, s->user);
+    return send_ok(req);
+}
+
+/* ========================================================================
+ * API v1 für Drittsysteme: Bearer-Token statt Session, kein CSRF
+ * ====================================================================== */
+/* Quelladresse des Clients; IPv4-Clients erscheinen am Dual-Stack-Socket als ::ffff:a.b.c.d */
+static void peer_ip(httpd_req_t *req, char *buf, size_t len)
+{
+    strlcpy(buf, "?", len);
+    int fd = httpd_req_to_sockfd(req);
+    if (fd < 0) return;
+    struct sockaddr_storage ss;
+    socklen_t sl = sizeof(ss);
+    if (getpeername(fd, (struct sockaddr *)&ss, &sl) != 0) return;
+    if (ss.ss_family == AF_INET6) {
+        const struct sockaddr_in6 *s6 = (const struct sockaddr_in6 *)&ss;
+        const uint8_t *a = (const uint8_t *)&s6->sin6_addr;
+        bool v4mapped = (a[10] == 0xff && a[11] == 0xff);
+        for (int i = 0; i < 10; i++) {
+            if (a[i]) v4mapped = false;
+        }
+        if (v4mapped) {
+            snprintf(buf, len, "%u.%u.%u.%u", a[12], a[13], a[14], a[15]);
+        } else {
+            inet_ntop(AF_INET6, &s6->sin6_addr, buf, len);
+        }
+    } else if (ss.ss_family == AF_INET) {
+        inet_ntop(AF_INET, &((const struct sockaddr_in *)&ss)->sin_addr, buf, len);
+    }
+}
+
+/* Bearer-Token prüfen. Sendet bei Fehler selbst die Antwort und liefert false. */
+static bool require_bearer(httpd_req_t *req, bool persist_use, api_token_t *t, char *ip, size_t iplen)
+{
+    peer_ip(req, ip, iplen);
+    uint32_t retry = 0;
+    if (!api_tokens_rate_allowed(ip, &retry)) {
+        char ra[16];
+        snprintf(ra, sizeof(ra), "%" PRIu32, retry);
+        httpd_resp_set_hdr(req, "Retry-After", ra);
+        send_error(req, "429 Too Many Requests", "Zu viele Fehlversuche, spaeter erneut");
+        return false;
+    }
+    char hdr[96] = {0};
+    if (httpd_req_get_hdr_value_str(req, "Authorization", hdr, sizeof(hdr)) != ESP_OK ||
+        strncasecmp(hdr, "Bearer ", 7) != 0) {
+        httpd_resp_set_hdr(req, "WWW-Authenticate", "Bearer");
+        send_error(req, "401 Unauthorized", "Bearer-Token fehlt");
+        return false;
+    }
+    const char *tok = hdr + 7;
+    while (*tok == ' ') tok++;
+    token_result_t r = api_tokens_verify(tok, ip, persist_use, t);
+    if (r != TOKEN_OK) {
+        api_tokens_rate_failed(ip);
+        event_log(EV_DENIED, "API: Token von %s abgelehnt: %s", ip, api_tokens_result_text(r));
+        vTaskDelay(pdMS_TO_TICKS(300));
+        bool known = (r == TOKEN_DISABLED || r == TOKEN_EXPIRED || r == TOKEN_IP_DENIED);
+        send_error(req, known ? "403 Forbidden" : "401 Unauthorized", api_tokens_result_text(r));
+        return false;
+    }
+    api_tokens_rate_succeeded(ip);
+    return true;
+}
+
+/* Nur die Türen, die das Token sehen darf und die aktiv sind */
+static cJSON *v1_doors_json(const api_token_t *t)
+{
+    cJSON *arr = cJSON_CreateArray();
+    for (int i = 0; i < CFG_MAX_DOORS; i++) {
+        if (!(t->doors & (1u << i)) || !door_is_enabled(i)) continue;
+        cJSON_AddItemToArray(arr, door_status_json(i));
+    }
+    return arr;
+}
+
+static esp_err_t h_v1_status(httpd_req_t *req)
+{
+    api_token_t t;
+    char ip[48];
+    if (!require_bearer(req, false, &t, ip, sizeof(ip))) return ESP_OK;
+    if (!t.can_status) return send_error(req, "403 Forbidden", "Token darf den Status nicht lesen");
+    net_status_t ns;
+    net_eth_get_status(&ns);
+    char tbuf[24];
+    time_sync_format_local(time(NULL), tbuf, sizeof(tbuf));
+    uint32_t rem = 0;
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddStringToObject(o, "hostname", g_settings.net.hostname);
+    cJSON_AddStringToObject(o, "firmware", esp_app_get_description()->version);
+    cJSON_AddNumberToObject(o, "uptime_s", (double)(esp_timer_get_time() / 1000000));
+    cJSON_AddStringToObject(o, "time", tbuf);
+    cJSON_AddBoolToObject(o, "time_valid", time_sync_is_valid());
+    cJSON_AddBoolToObject(o, "link", ns.link_up);
+    cJSON_AddBoolToObject(o, "keypad_locked", access_keypad_locked(&rem));
+    cJSON_AddItemToObject(o, "doors", v1_doors_json(&t));
+    return send_json(req, o);
+}
+
+static esp_err_t h_v1_doors(httpd_req_t *req)
+{
+    api_token_t t;
+    char ip[48];
+    if (!require_bearer(req, false, &t, ip, sizeof(ip))) return ESP_OK;
+    if (!t.can_status) return send_error(req, "403 Forbidden", "Token darf den Status nicht lesen");
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddItemToObject(o, "doors", v1_doors_json(&t));
+    return send_json(req, o);
+}
+
+/* Nummer aus /api/v1/doors/<n>/open: 1..CFG_MAX_DOORS, 0 = keine Tuer, -1 = andere Aktion */
+static int uri_door_number(const httpd_req_t *req)
+{
+    const char *p = strstr(req->uri, "/doors/");
+    if (!p) return 0;
+    p += 7;
+    char *end = NULL;
+    long n = strtol(p, &end, 10);
+    if (end == p || n < 1 || n > CFG_MAX_DOORS) return 0;
+    if (strncmp(end, "/open", 5) != 0 || (end[5] && end[5] != '?')) return -1;
+    return (int)n;
+}
+
+static esp_err_t h_v1_door_open(httpd_req_t *req)
+{
+    api_token_t t;
+    char ip[48];
+    if (!require_bearer(req, true, &t, ip, sizeof(ip))) return ESP_OK;
+    int n = uri_door_number(req);
+    if (n < 0) return send_error(req, "404 Not Found", "Unbekannte Aktion, erwartet /api/v1/doors/<n>/open");
+    if (n == 0) return send_error(req, "404 Not Found", "Tuer nicht vorhanden");
+    if (!t.can_open || !(t.doors & (1u << (n - 1)))) {
+        event_log(EV_DENIED, "API: Token '%s' darf Tuer %d nicht oeffnen (%s)", t.name, n, ip);
+        return send_error(req, "403 Forbidden", "Token darf diese Tuer nicht oeffnen");
+    }
+    uint32_t pulse = 0;
+    if (req->content_len > 0) {
+        cJSON *j = read_json(req);
+        if (j) {
+            int p = jint(j, "pulse_ms", 0);
+            if (p > 0) pulse = (uint32_t)p;
+            cJSON_Delete(j);
+        }
+    }
+    char reason[96];
+    snprintf(reason, sizeof(reason), "API '%s' von %s", t.name, ip);
+    esp_err_t err = door_open(n - 1, reason, pulse);
+    if (err == ESP_ERR_INVALID_STATE) return send_error(req, "409 Conflict", "Tuer ist deaktiviert");
+    if (err != ESP_OK) return send_error(req, "500 Internal Server Error", "Relais konnte nicht geschaltet werden");
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddBoolToObject(o, "ok", true);
+    cJSON_AddNumberToObject(o, "door", n);
+    cJSON_AddStringToObject(o, "name", door_name(n - 1));
+    return send_json(req, o);
 }
 
 /* ========================================================================
@@ -1273,6 +1633,13 @@ static const httpd_uri_t s_routes[] = {
     ROUTE("/api/system/password",      HTTP_POST,   h_password_post),
     ROUTE("/api/system/reboot",        HTTP_POST,   h_reboot_post),
     ROUTE("/api/system/factory-reset", HTTP_POST,   h_factory_reset_post),
+    ROUTE("/api/tokens",               HTTP_GET,    h_tokens_get),
+    ROUTE("/api/tokens",               HTTP_POST,   h_tokens_post),
+    ROUTE("/api/tokens/*",             HTTP_PUT,    h_tokens_put),
+    ROUTE("/api/tokens/*",             HTTP_DELETE, h_tokens_delete),
+    ROUTE("/api/v1/status",            HTTP_GET,    h_v1_status),
+    ROUTE("/api/v1/doors",             HTTP_GET,    h_v1_doors),
+    ROUTE("/api/v1/doors/*",           HTTP_POST,   h_v1_door_open),
     ROUTE("/api/backup",               HTTP_GET,    h_backup_get),
     ROUTE("/api/restore",              HTTP_POST,   h_restore_post),
     ROUTE("/api/firmware",             HTTP_GET,    h_firmware_get),

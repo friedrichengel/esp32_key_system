@@ -6,8 +6,8 @@
  * Laufzeit-Einstellungen (IP-Adressen, Codes, Passwort ...) liegen in NVS (settings.c).
  *
  * Board: ESP32-S31-Function-CoreBoard-1. Externe Pins am 24.10.2026 gegen den Schaltplan
- * geprüft (docs/hardware.md): GPIO37-42 sind auf J2 frei, Codec liegt auf GPIO50-57,
- * GPIO4 ist der PHY-Interrupt.
+ * geprüft (docs/hardware.md): GPIO35/36/37-49 sind auf J2 frei, Codec liegt auf GPIO50-57,
+ * GPIO4 ist der PHY-Interrupt, GPIO0/1 tragen den Footprint des 32-kHz-Quarzes.
  */
 #pragma once
 
@@ -31,7 +31,7 @@
 /* ========================================================================
  * Extern angeschlossen (J2-Header)
  * ====================================================================== */
-/* Keypad mit RS232-Ausgang über MAX3232-Pegelwandler */
+/* Genau ein Keypad je Gerät, RS232-Ausgang über MAX3232-Pegelwandler, fest einer Tür zugeordnet */
 #define CFG_KEYPAD_UART_NUM       UART_NUM_1
 #define CFG_KEYPAD_RX_GPIO        GPIO_NUM_38   /* J2-22 */
 #define CFG_KEYPAD_TX_GPIO        GPIO_NUM_37   /* J2-23, optional (Quittung/Beep), sonst UART_PIN_NO_CHANGE */
@@ -42,16 +42,18 @@
 #define CFG_KEYPAD_IDLE_RESET_MS  10000         /* Teileingabe nach dieser Pause verwerfen   */
 #define CFG_KEYPAD_RAW_BUF        256           /* Rohbytes für den Lernmodus                */
 
-/* Relais für den Türöffner */
-#define CFG_RELAY_GPIO            GPIO_NUM_40   /* J2-19 */
-#define CFG_RELAY_ACTIVE_LOW      0             /* 1 bei Active-Low-Relaismodulen           */
+/* Türen: bis zu CFG_MAX_DOORS Relais, je Tür optional Türkontakt (Reed gegen GND) und
+ * Austaster (REX, gegen GND), beide mit internem Pull-up. Tür 1 = ursprüngliche Pins.
+ * Die Pins der Türen 2-4 liegen auf freien J2-Pins; GPIO2/3 bleiben als Reserve frei. */
+#define CFG_MAX_DOORS             4
+/*                                  Tür 1        Tür 2        Tür 3        Tür 4   */
+#define CFG_DOOR_RELAY_GPIOS      { GPIO_NUM_40, GPIO_NUM_43, GPIO_NUM_46, GPIO_NUM_49 }  /* J2-19, 17, 16, 11 */
+#define CFG_DOOR_CONTACT_GPIOS    { GPIO_NUM_42, GPIO_NUM_44, GPIO_NUM_47, GPIO_NUM_36 }  /* J2-20, 18, 13, 24 */
+#define CFG_DOOR_REX_GPIOS        { GPIO_NUM_39, GPIO_NUM_45, GPIO_NUM_48, GPIO_NUM_35 }  /* J2-21, 15, 14, 25 */
+#define CFG_RELAY_ACTIVE_LOW      0             /* Compile-Zeit-Default, bis NVS gelesen ist */
 #define CFG_RELAY_PULSE_MS_DEFAULT 3000
 #define CFG_RELAY_PULSE_MS_MIN    500
 #define CFG_RELAY_PULSE_MS_MAX    30000         /* harte Obergrenze in der Firmware         */
-
-/* Optionale Eingänge (gegen GND, interner Pull-up) */
-#define CFG_DOOR_CONTACT_GPIO     GPIO_NUM_42   /* J2-20 Reed-Kontakt, Low = Tür zu         */
-#define CFG_EXIT_BUTTON_GPIO      GPIO_NUM_39   /* J2-21 Austaster innen (REX)              */
 #define CFG_INPUT_DEBOUNCE_MS     50
 
 /* ========================================================================
@@ -62,6 +64,12 @@
 #define CFG_KEYPAD_FAIL_LIMIT     5             /* Fehlversuche bis zur Sperre              */
 #define CFG_KEYPAD_LOCK_BASE_S    30            /* erste Sperre, verdoppelt sich            */
 #define CFG_KEYPAD_LOCK_MAX_S     600
+
+/* API-Token für Drittsysteme (Hausautomation), siehe PLAN.md §8a */
+#define CFG_TOKENS_MAX            8
+#define CFG_TOKEN_FAIL_LIMIT      10            /* Fehlversuche je Quell-IP bis zur Sperre  */
+#define CFG_TOKEN_LOCK_BASE_S     60            /* erste Sperre, verdoppelt sich            */
+#define CFG_TOKEN_LOCK_MAX_S      900
 
 /* ========================================================================
  * Netzwerk / Web
@@ -95,6 +103,7 @@
 #define CFG_KEY_PATH              CFG_FS_BASE_PATH "/webserver_key.pem"
 #define CFG_LOG_PATH              CFG_FS_BASE_PATH "/events.log"
 #define CFG_CODES_PATH            CFG_FS_BASE_PATH "/codes.json"
+#define CFG_TOKENS_PATH           CFG_FS_BASE_PATH "/tokens.json"
 #define CFG_CERT_ORG_NAME         "esp32_key_system"
 
 /* ========================================================================

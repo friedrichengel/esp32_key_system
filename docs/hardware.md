@@ -46,9 +46,20 @@
 
 ```
 Keypad (RS232) ──► MAX3232-Modul (3,3 V) ──► GPIO38 (UART1 RX), optional GPIO37 (TX)
-GPIO40 ──► Relaismodul (Optokoppler, 5 V vom J2) ──► NO-Kontakt in Serie zum Türöffner (12 V)
-GPIO42 ◄── Reed-Kontakt Tür (gegen GND, interner Pull-up)
-GPIO39 ◄── Austaster innen (gegen GND, interner Pull-up)
+GPIO40 ──► Relaismodul Tür 1 (Optokoppler, 5 V vom J2) ──► NO-Kontakt in Serie zum Türöffner (12 V)
+GPIO42 ◄── Reed-Kontakt Tür 1 (gegen GND, interner Pull-up)
+GPIO39 ◄── Austaster innen Tür 1 (gegen GND, interner Pull-up)
 ```
+
+Weitere Türen (ab Werk deaktiviert, Pins bleiben dann unberührt; Zuordnung in `config.h`):
+
+| Tür | Relais | Türkontakt | Austaster (REX) |
+|---|---|---|---|
+| 1 | GPIO40 (J2-19) | GPIO42 (J2-20) | GPIO39 (J2-21) |
+| 2 | GPIO43 (J2-17) | GPIO44 (J2-18) | GPIO45 (J2-15) |
+| 3 | GPIO46 (J2-16) | GPIO47 (J2-13) | GPIO48 (J2-14) |
+| 4 | GPIO49 (J2-11) | GPIO36 (J2-24) | GPIO35 (J2-25) |
+
+GPIO2 und GPIO3 (J2-7, J2-10) bleiben als Reserve frei. Das eine Keypad (UART1, GPIO37/38) ist in den Einstellungen einer dieser Türen zugeordnet.
 
 Stromversorgung: 5 V über J2 oder USB-C; Türöffner aus eigenem Netzteil, nie aus dem Board.

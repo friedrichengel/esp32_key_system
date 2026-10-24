@@ -70,6 +70,28 @@
     });
   }
 
+  /* ---------- Türen (Hilfen) ---------- */
+  let doorsBrief = [];            /* [{door, name, enabled}] vom letzten Laden */
+  function doorName(doors, n) { const d = (doors || doorsBrief).find(x => x.door === n); return d ? d.name : ('Tür ' + n); }
+  function allEnabledMask(doors) { return (doors || doorsBrief).filter(d => d.enabled).reduce((m, d) => m | (1 << (d.door - 1)), 0); }
+  function doorsText(mask, doors) {
+    doors = doors || doorsBrief;
+    const en = doors.filter(d => d.enabled);
+    const sel = doors.filter(d => mask & (1 << (d.door - 1)));
+    if (en.length && en.every(d => mask & (1 << (d.door - 1))) && sel.length === en.length) return 'alle';
+    return sel.map(d => esc(d.name) + (d.enabled ? '' : ' (aus)')).join(', ') || '<span class="bad">keine</span>';
+  }
+  function renderDoorChecks(container, mask, doors) {
+    doors = doors || doorsBrief;
+    container.innerHTML = doors.map(d =>
+      `<label><input type="checkbox" data-door="${d.door}" ${mask & (1 << (d.door - 1)) ? 'checked' : ''}> ${esc(d.name)}${d.enabled ? '' : ' <span class="hint">(deaktiviert)</span>'}</label>`).join('');
+  }
+  function readDoorChecks(container) {
+    let m = 0;
+    $$('input[data-door]', container).forEach(i => { if (i.checked) m |= 1 << (Number(i.dataset.door) - 1); });
+    return m;
+  }
+
   /* ---------- Routing ---------- */
   function show(id) {
     $$('.view').forEach(v => v.classList.add('hidden'));
@@ -92,7 +114,7 @@
     }
     $('#nav').classList.remove('hidden');
     const view = (location.hash || '#dashboard').slice(1);
-    const loaders = { dashboard: loadDashboard, codes: loadCodes, log: loadLog, network: loadNetwork, cert: loadCert, firmware: loadFirmware, system: loadSystem };
+    const loaders = { dashboard: loadDashboard, codes: loadCodes, log: loadLog, api: loadTokens, network: loadNetwork, cert: loadCert, firmware: loadFirmware, system: loadSystem };
     if (!loaders[view]) { location.hash = '#dashboard'; return; }
     show(view);
     try { await loaders[view](); } catch (e) { toast(e.message, 'bad'); }
@@ -103,14 +125,26 @@
   /* ---------- Übersicht ---------- */
   async function loadDashboard() {
     const s = await api('/api/status');
-    const d = s.door;
-    kv($('#dash-door'), [
-      ['Relais', d.relay_active ? 'aktiv (Tür offen)' : 'aus', d.relay_active ? 'warn' : ''],
-      ['Türkontakt', d.contact_enabled ? (d.contact_closed ? 'geschlossen' : 'offen') : 'nicht konfiguriert', d.contact_enabled && !d.contact_closed ? 'warn' : ''],
-      ['Keypad', d.keypad_locked ? `gesperrt (${d.keypad_lock_remaining_s} s)` : (d.keypad_fail_count ? `bereit, ${d.keypad_fail_count} Fehlversuch(e)` : 'bereit'), d.keypad_locked ? 'bad' : 'ok'],
-      ['Keypad-Daten', d.keypad_rx_count ? `${d.keypad_rx_count} Byte, zuletzt vor ${fmtUptime(s.system.uptime_s - d.keypad_last_rx_uptime_s)}` : 'noch nichts empfangen', d.keypad_rx_count ? '' : 'warn'],
-      ['Letzte Öffnung', d.last_open_uptime_s ? 'vor ' + fmtUptime(s.system.uptime_s - d.last_open_uptime_s) : 'seit Start keine'],
-      ['Codes', d.codes_count]
+    doorsBrief = s.doors.map(d => ({ door: d.door, name: d.name, enabled: d.enabled }));
+    const active = s.doors.filter(d => d.enabled);
+    $('#dash-doors').innerHTML = active.map(d => `
+      <div class="door ${d.relay_active ? 'open' : ''}" data-door="${d.door}">
+        <div class="row" style="justify-content:space-between;margin:0 0 6px"><strong>${esc(d.name)}</strong>
+          <span class="badge ${d.relay_active ? 'warn' : 'ok'}">${d.relay_active ? 'Relais aktiv' : 'Relais aus'}</span></div>
+        <div class="kv">
+          <div class="k">Türkontakt</div><div class="v ${d.contact_enabled && !d.contact_closed ? 'warn' : ''}">${d.contact_enabled ? (d.contact_closed ? 'geschlossen' : 'offen') : 'nicht konfiguriert'}</div>
+          <div class="k">Letzte Öffnung</div><div class="v">${d.last_open_uptime_s ? 'vor ' + fmtUptime(s.system.uptime_s - d.last_open_uptime_s) : 'seit Start keine'}</div>
+        </div>
+        <button data-act="open">${esc(d.name)} öffnen</button>
+      </div>`).join('') || '<p class="hint">Keine Tür aktiv (System → Türen und Relais).</p>';
+    const k = s.keypad;
+    kv($('#dash-keypad'), [
+      ['Zugeordnete Tür', esc(doorName(doorsBrief, k.door)), doorsBrief.find(d => d.door === k.door && d.enabled) ? '' : 'warn'],
+      ['Status', k.locked ? `gesperrt (${k.lock_remaining_s} s)` : (k.fail_count ? `bereit, ${k.fail_count} Fehlversuch(e)` : 'bereit'), k.locked ? 'bad' : 'ok'],
+      ['Daten', k.rx_count ? `${k.rx_count} Byte, zuletzt vor ${fmtUptime(s.system.uptime_s - k.last_rx_uptime_s)}` : 'noch nichts empfangen', k.rx_count ? '' : 'warn'],
+      ['Lernmodus', k.learn_mode ? 'aktiv' : 'aus', k.learn_mode ? 'warn' : ''],
+      ['Codes', s.codes_count],
+      ['API-Token', s.tokens_count]
     ]);
     kv($('#dash-net'), [
       ['Link', s.network.link ? `${s.network.speed} Mbit/s ${s.network.full_duplex ? 'Vollduplex' : 'Halbduplex'}` : 'kein Link', s.network.link ? 'ok' : 'bad'],
@@ -134,6 +168,15 @@
     $('#dash-log tbody').innerHTML = l.entries.map(e =>
       `<tr><td class="t">${fmtTs(e)}</td><td><span class="cat ${e.cat}">${e.cat}</span></td><td>${esc(e.msg)}</td></tr>`).join('');
   }
+  $('#dash-doors').addEventListener('click', async (ev) => {
+    const btn = ev.target.closest('button[data-act=open]');
+    if (!btn) return;
+    const n = Number(btn.closest('.door').dataset.door);
+    btn.disabled = true;
+    try { const r = await api('/api/door/open', { method: 'POST', json: { door: n } }); toast(`${r.name} geöffnet`, 'ok'); loadDashboard().catch(() => {}); }
+    catch (e) { toast(e.message, 'bad'); }
+    btn.disabled = false;
+  });
 
   /* ---------- Codes ---------- */
   const TYPE_NAMES = { permanent: 'Dauercode', timed: 'Zeitcode', onetime: 'Einmalcode' };
@@ -160,6 +203,7 @@
   async function loadCodes() {
     const r = await api('/api/codes');
     codesCache = r.codes;
+    doorsBrief = r.doors;
     $('#codes-count').textContent = `(${r.codes.length} / ${r.max})`;
     $('#codes-time-warn').classList.toggle('hidden', r.time_valid);
     const now = Math.floor(Date.now() / 1000);
@@ -167,23 +211,25 @@
       const st = codeStatus(c, now);
       return `<tr data-id="${c.id}">
         <td>${esc(c.name)}</td><td><code>${esc(c.code)}</code></td><td>${TYPE_NAMES[c.type] || c.type}</td>
+        <td>${doorsText(c.doors)}</td>
         <td>${codeValidity(c)}</td><td>${c.uses}${c.max_uses ? ' / ' + c.max_uses : ''}</td>
         <td class="t">${fmtUnix(c.last_used) || '–'}</td><td><span class="badge ${st[1]}">${st[0]}</span></td>
         <td class="actions"><button class="secondary" data-act="edit">Bearbeiten</button> <button class="danger" data-act="del">Löschen</button></td>
       </tr>`;
-    }).join('') || '<tr><td colspan="8" class="hint">Noch keine Codes angelegt.</td></tr>';
+    }).join('') || '<tr><td colspan="9" class="hint">Noch keine Codes angelegt.</td></tr>';
   }
   function openCodeEditor(c) {
     const f = $('#form-code');
     f.reset();
     $('#code-editor-title').textContent = c ? `Code bearbeiten: ${c.name}` : 'Neuer Code';
-    const data = c ? Object.assign({}, c) : { id: '', type: 'permanent', enabled: true, weekdays: 0x7F, win_from: 360, win_to: 1200, max_uses: 0 };
+    const data = c ? Object.assign({}, c) : { id: '', type: 'permanent', enabled: true, weekdays: 0x7F, win_from: 360, win_to: 1200, max_uses: 0, doors: allEnabledMask() || 1 };
     data.valid_from_local = unixToLocalInput(data.valid_from);
     data.valid_until_local = unixToLocalInput(data.valid_until);
     data.win_from_t = minToTime(data.win_from || 0);
     data.win_to_t = minToTime(data.win_to || 0);
     fillForm(f, data);
     $$('#code-weekdays input').forEach(i => i.checked = !!(data.weekdays & (1 << Number(i.dataset.wd))));
+    renderDoorChecks($('#code-doors'), data.doors);
     toggleCodeFields();
     $('#code-editor').classList.remove('hidden');
     $('#code-editor').scrollIntoView({ behavior: 'smooth' });
@@ -210,8 +256,10 @@
     const d = formData(f);
     let weekdays = 0;
     $$('#code-weekdays input').forEach(i => { if (i.checked) weekdays |= 1 << Number(i.dataset.wd); });
+    const doors = readDoorChecks($('#code-doors'));
+    if (!doors) throw new Error('Mindestens eine Tür wählen');
     const body = {
-      name: d.name, code: d.code, type: d.type, enabled: d.enabled,
+      name: d.name, code: d.code, type: d.type, enabled: d.enabled, doors,
       valid_from: localInputToUnix(d.valid_from_local), valid_until: localInputToUnix(d.valid_until_local),
       win_enable: d.win_enable, weekdays, win_from: timeToMin(d.win_from_t), win_to: timeToMin(d.win_to_t),
       max_uses: d.type === 'onetime' ? 1 : (d.max_uses || 0)
@@ -237,6 +285,108 @@
     $('#log-table tbody').innerHTML = logCache.filter(e => !f || e.cat === f).map(e =>
       `<tr><td class="t">${fmtTs(e)}</td><td><span class="cat ${e.cat}">${e.cat}</span></td><td>${esc(e.msg)}</td></tr>`).join('');
   }
+
+  /* ---------- API-Token ---------- */
+  let tokensCache = [];
+  function tokenRights(t) {
+    const r = [];
+    if (t.can_open) r.push('öffnen');
+    if (t.can_status) r.push('Status');
+    return r.join(', ') || '<span class="bad">keine</span>';
+  }
+  async function loadTokens() {
+    const r = await api('/api/tokens');
+    tokensCache = r.tokens;
+    doorsBrief = r.doors;
+    $('#tokens-count').textContent = `(${r.tokens.length} / ${r.max})`;
+    const now = Math.floor(Date.now() / 1000);
+    $('#tokens-table tbody').innerHTML = r.tokens.map(t => {
+      const expired = t.expires_at && r.time_valid && now > t.expires_at;
+      const st = !t.enabled ? ['gesperrt', 'warn'] : expired ? ['abgelaufen', 'bad'] : ['aktiv', 'ok'];
+      return `<tr data-id="${esc(t.id)}">
+        <td>${esc(t.name)}</td><td><code>${esc(t.id)}</code></td><td>${doorsText(t.doors)}</td><td>${tokenRights(t)}</td>
+        <td>${t.allow_ip ? '<code>' + esc(t.allow_ip) + '</code>' : 'jede'}</td>
+        <td class="t">${t.expires_at ? fmtUnix(t.expires_at) : 'unbegrenzt'}</td>
+        <td class="t">${t.use_count ? t.use_count + '× ' + (fmtUnix(t.last_used) || '') : 'nie'}</td>
+        <td><span class="badge ${st[1]}">${st[0]}</span></td>
+        <td class="actions"><button class="secondary" data-act="edit">Bearbeiten</button> <button class="danger" data-act="del">Löschen</button></td>
+      </tr>`;
+    }).join('') || '<tr><td colspan="9" class="hint">Noch keine Token angelegt.</td></tr>';
+    const host = location.host;
+    $('#api-example').textContent =
+`# Tür 1 öffnen (Impulsdauer optional, in ms)
+curl -k -X POST https://${host}/api/v1/doors/1/open \\
+     -H "Authorization: Bearer ks1.xxxxxxxx.yyyyyyyy…" \\
+     -H "Content-Type: application/json" -d '{"pulse_ms": 3000}'
+
+# Status (Türen, Kontakt, Relais, Link)
+curl -k https://${host}/api/v1/status -H "Authorization: Bearer ks1.…"
+
+# Home Assistant (configuration.yaml)
+rest_command:
+  haustuer_oeffnen:
+    url: "https://${host}/api/v1/doors/1/open"
+    method: POST
+    headers:
+      Authorization: "Bearer ks1.…"
+    verify_ssl: false
+sensor:
+  - platform: rest
+    name: Keysystem Haustür
+    resource: "https://${host}/api/v1/status"
+    headers:
+      Authorization: "Bearer ks1.…"
+    value_template: "{{ 'offen' if not value_json.doors[0].contact_closed else 'zu' }}"
+    verify_ssl: false
+    scan_interval: 30`;
+  }
+  function openTokenEditor(t) {
+    const f = $('#form-token');
+    f.reset();
+    $('#token-editor-title').textContent = t ? `Token bearbeiten: ${t.name}` : 'Neues Token';
+    const data = t ? Object.assign({}, t) : { id: '', name: '', allow_ip: '', enabled: true, can_open: true, can_status: true, doors: allEnabledMask() || 1, expires_at: 0 };
+    data.expires_local = unixToLocalInput(data.expires_at);
+    fillForm(f, data);
+    renderDoorChecks($('#token-doors'), data.doors);
+    $('#token-new').classList.add('hidden');
+    $('#token-editor').classList.remove('hidden');
+    $('#token-editor').scrollIntoView({ behavior: 'smooth' });
+  }
+  $('#btn-token-new').addEventListener('click', () => openTokenEditor(null));
+  $('#btn-token-cancel').addEventListener('click', () => $('#token-editor').classList.add('hidden'));
+  $('#btn-token-close').addEventListener('click', () => { $('#token-plain').textContent = ''; $('#token-new').classList.add('hidden'); });
+  $('#btn-token-copy').addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText($('#token-plain').textContent); toast('Token kopiert', 'ok'); }
+    catch (e) { toast('Kopieren nicht möglich, bitte markieren und kopieren', 'bad'); }
+  });
+  $('#tokens-table').addEventListener('click', async (ev) => {
+    const btn = ev.target.closest('button[data-act]');
+    if (!btn) return;
+    const id = btn.closest('tr').dataset.id;
+    const t = tokensCache.find(x => x.id === id);
+    if (btn.dataset.act === 'edit') return openTokenEditor(t);
+    if (!confirm(`Token "${t.name}" löschen? Das Drittsystem verliert sofort den Zugriff.`)) return;
+    try { await api('/api/tokens/' + encodeURIComponent(id), { method: 'DELETE' }); toast('Gelöscht', 'ok'); await loadTokens(); }
+    catch (e) { toast(e.message, 'bad'); }
+  });
+  onSubmit('#form-token', async (f) => {
+    const d = formData(f);
+    const doors = readDoorChecks($('#token-doors'));
+    if (!doors) throw new Error('Mindestens eine Tür wählen');
+    const body = { name: d.name, doors, can_open: d.can_open, can_status: d.can_status, enabled: d.enabled, allow_ip: (d.allow_ip || '').trim(), expires_at: localInputToUnix(d.expires_local) };
+    if (d.id) {
+      await api('/api/tokens/' + encodeURIComponent(d.id), { method: 'PUT', json: body });
+      toast('Gespeichert', 'ok');
+    } else {
+      const r = await api('/api/tokens', { method: 'POST', json: body });
+      $('#token-plain').textContent = r.token;
+      $('#token-new').classList.remove('hidden');
+      toast('Token angelegt, bitte jetzt sichern', 'ok');
+    }
+    $('#token-editor').classList.add('hidden');
+    await loadTokens();
+    if (!d.id) $('#token-new').scrollIntoView({ behavior: 'smooth' });
+  });
 
   /* ---------- Netzwerk ---------- */
   async function loadNetwork() {
@@ -334,9 +484,28 @@
   });
 
   /* ---------- System ---------- */
+  function renderDoorForms(doors) {
+    $('#doors-forms').innerHTML = doors.map(d => `
+      <fieldset data-door="${d.door}"><legend>Tür ${d.door} · Relais GPIO${d.pins.relay}, Kontakt GPIO${d.pins.contact}, REX GPIO${d.pins.rex}</legend>
+        <div class="grid2">
+          <label><input type="checkbox" name="enabled" ${d.enabled ? 'checked' : ''}> Tür aktiv</label>
+          <label>Name <input name="name" maxlength="31" value="${esc(d.name)}" required></label>
+          <label>Relais-Impulsdauer (ms) <input name="relay_pulse_ms" type="number" min="500" max="30000" step="100" value="${d.relay_pulse_ms}"></label>
+          <label><input type="checkbox" name="relay_active_low" ${d.relay_active_low ? 'checked' : ''}> Relaismodul ist Active-Low</label>
+          <label><input type="checkbox" name="door_contact_enable" ${d.door_contact_enable ? 'checked' : ''}> Türkontakt angeschlossen</label>
+          <label><input type="checkbox" name="exit_button_enable" ${d.exit_button_enable ? 'checked' : ''}> Austaster (REX) angeschlossen</label>
+        </div>
+      </fieldset>`).join('');
+  }
+  function renderKeypadDoorSelect(doors, selected) {
+    $('#keypad-door').innerHTML = doors.map(d =>
+      `<option value="${d.door}" ${d.door === selected ? 'selected' : ''}>Tür ${d.door}: ${esc(d.name)}${d.enabled ? '' : ' (deaktiviert)'}</option>`).join('');
+  }
   async function loadSystem() {
     const s = await api('/api/system');
-    fillForm($('#form-door'), s.door);
+    doorsBrief = s.doors.map(d => ({ door: d.door, name: d.name, enabled: d.enabled }));
+    renderDoorForms(s.doors);
+    renderKeypadDoorSelect(s.doors, s.keypad.door);
     fillForm($('#form-keypad'), s.keypad);
     $('#form-password').user.value = s.admin_user;
     $('#learn-panel').classList.toggle('hidden', !s.keypad.learn_mode);
@@ -473,10 +642,6 @@
     try { await api('/api/logout', { method: 'POST' }); } catch (e) { }
     session = { authenticated: false }; route();
   });
-  $('#btn-open').addEventListener('click', async () => {
-    try { await api('/api/door/open', { method: 'POST' }); toast('Tür geöffnet', 'ok'); loadDashboard().catch(() => {}); }
-    catch (e) { toast(e.message, 'bad'); }
-  });
   $('#log-filter').addEventListener('change', renderLog);
   $('#btn-log-refresh').addEventListener('click', () => loadLog().catch(e => toast(e.message, 'bad')));
   $('#btn-log-csv').addEventListener('click', () => {
@@ -511,9 +676,14 @@
     catch (e) { toast(e.message, 'bad'); }
   });
 
-  onSubmit('#form-door', async (f) => { await api('/api/system', { method: 'POST', json: { door: formData(f) } }); toast('Gespeichert', 'ok'); });
+  onSubmit('#form-doors', async () => {
+    const doors = $$('#doors-forms fieldset').map(fs => Object.assign({ door: Number(fs.dataset.door) }, formData(fs)));
+    await api('/api/system', { method: 'POST', json: { doors } });
+    toast('Gespeichert', 'ok');
+    await loadSystem();
+  });
   onSubmit('#form-keypad', async (f) => {
-    const k = formData(f); k.baud = Number(k.baud); k.parity = Number(k.parity); k.frame_mode = Number(k.frame_mode);
+    const k = formData(f); k.baud = Number(k.baud); k.parity = Number(k.parity); k.frame_mode = Number(k.frame_mode); k.door = Number(k.door);
     await api('/api/system', { method: 'POST', json: { keypad: k } }); toast('Gespeichert', 'ok');
     await loadSystem();
   });
@@ -539,7 +709,7 @@
     catch (e) { toast(e.message, 'bad'); }
   });
   $('#btn-factory').addEventListener('click', async () => {
-    if (!confirm('WERKSRESET: Alle Einstellungen, Codes, Zertifikat und Passwort löschen?')) return;
+    if (!confirm('WERKSRESET: Alle Einstellungen, Codes, API-Token, Zertifikat und Passwort löschen?')) return;
     if (!confirm('Wirklich? Das Gerät startet danach mit DHCP und Ersteinrichtung.')) return;
     try { await api('/api/system/factory-reset', { method: 'POST' }); toast('Werksreset, Gerät startet neu …', 'ok'); }
     catch (e) { toast(e.message, 'bad'); }

@@ -183,11 +183,11 @@ Speicherung: NVS-Namespace `codes`, bis ~200 Einträge, Codes im Klartext. Ehrli
 
 ---
 
-## 8a. Mehrere Türen und API-Token (Entwurf, Entscheidung 24.10.2026)
+## 8a. Mehrere Türen und API-Token (entschieden und umgesetzt 24.10.2026)
 
 **Mehrere Türen**
 
-- `CFG_MAX_DOORS` (Vorschlag 4) in `config.h`; freie J2-Pins laut Schaltplan: GPIO2, 3, 35, 36, 43–49 (GPIO4 ist PHY-Interrupt, GPIO0/1 Quarz-Footprint). Je Tür Relais-Pin, optional Kontakt- und REX-Pin, Pins bleiben Compile-Zeit-Tabelle in `config.h`.
+- `CFG_MAX_DOORS` = 4 in `config.h`; Pins (umgesetzt): Tür 1 = 40/42/39, Tür 2 = 43/44/45, Tür 3 = 46/47/48, Tür 4 = 49/36/35 (Relais/Kontakt/REX); GPIO2/3 bleiben frei, GPIO4 ist PHY-Interrupt, GPIO0/1 Quarz-Footprint. Nur aktive Türen konfigurieren ihre Kontakt-/REX-Pins; alle vier Relais-Pins werden beim Boot sicher inaktiv gesetzt.
 - `settings_door_t` wird zu `doors[CFG_MAX_DOORS]` mit `enabled`, `name[24]`, `relay_pulse_ms`, `relay_active_low`, `door_contact_enable`, `exit_button_enable` → `SETTINGS_VERSION 3` (Defaults statt Migration, noch keine Geräte im Feld).
 - Codes bekommen eine Bitmaske `doors` (Bit n = Tür n), Default alle; `codes.json` erweitert, fehlendes Feld = alle Türen (abwärtskompatibel zu bestehenden Backups).
 - **Genau ein Keypad pro Gerät** (Entscheidung 24.10.2026), fest einer Tür zugeordnet (`keypad.door`, Default Tür 1, in der UI wählbar). Ein gültiger Code am Keypad öffnet nur diese Tür, und nur wenn seine Türmaske sie enthält. Die übrigen Türen werden ausschließlich über Web-UI, API-Token und REX-Taster bedient.
@@ -230,11 +230,11 @@ Speicherung: NVS-Namespace `codes`, bis ~200 Einträge, Codes im Klartext. Ehrli
 | 5 | Signierte OTA: Signierskripte, Upload, Verifikation, Rollback | **Code fertig, kompiliert**; Test: unsigniertes Image ablehnen, Stromausfall während Update |
 | 6 | Härtung + Tests: Rate-Limits, WDT, DST-Wechsel, IPv6-only-Netz, Zert-Rotation, Lasttest TLS, Doku | Rate-Limits, Werksreset per BOOT-Taster, Protokolldatei erledigt; Tests warten auf Hardware |
 | 7 | **2FA** (Entscheidung 24.10.2026): TOTP RFC 6238 + 8 Recovery-Codes, strenge Variante ohne synchrone Uhr, Einrichtung über Admin-Seite mit QR-Code, keine externe RTC | **Code fertig, kompiliert**; Test mit Authenticator-App offen |
-| 8 | **API-Token + mehrere Türen** (Entscheidung 24.10.2026, Abschnitt 8a): bis zu 4 Türen als Array in Settings und Codes, Relais-/Kontakt-/REX-Pins je Tür, ein Keypad fest einer Tür zugeordnet, Token-Verwaltung in der UI, `/api/v1/doors/<n>/open` mit Bearer-Token | **in Arbeit**, Reihenfolge: erst Türen-Datenmodell (Settings-Version 3), dann Token |
+| 8 | **API-Token + mehrere Türen** (Entscheidung 24.10.2026, Abschnitt 8a): bis zu 4 Türen als Array in Settings und Codes, Relais-/Kontakt-/REX-Pins je Tür, ein Keypad fest einer Tür zugeordnet, Token-Verwaltung in der UI, `/api/v1/doors/<n>/open` mit Bearer-Token | **Code fertig, kompiliert, auf dem Board gebootet (24.10.2026)**: Settings v3, `codes.doors`, `door_relay` je Tür, Modul `api_tokens`, UI-Seiten „API“ und „Türen“, docs/api.md. Per curl gegen das Board getestet (24.10.2026): Türen aktivieren/umbenennen, Keypad-Zuordnung, Code mit Türmaske, Token anlegen/sperren/löschen, v1 Status und Öffnen (Tür 1 + 2), 403 bei fremder Tür, 401/403/404/429 inkl. Retry-After, Protokolleinträge, Backup v2, Werksreset. Offen: Browser-UI durchklicken, Home Assistant real, Relais an Tür 2–4 |
 
 ### Umsetzungsstand 24.10.2026
 
-Alle Module aus Abschnitt 2 sind implementiert und bauen fehlerfrei mit ESP-IDF 6.1 (Flash 1,04 MB von 4 MB, RAM 35 KB statisch). **Erster Hardwaretest am 24.10.2026** (Board an COM4, Testnetz 192.168.1.0/24 ohne Internet und ohne NTP): Boot, Ethernet, HTTPS und mDNS funktionieren; Keypad, Relais, OTA und 2FA sind noch ungetestet. Befunde aus dem Hardwaretest:
+Alle Module aus Abschnitt 2 sowie Phase 8 (mehrere Türen, API-Token, Abschnitt 8a) sind implementiert und bauen fehlerfrei mit ESP-IDF 6.1 (Flash 1,08 MB von 4 MB, RAM 38 KB statisch). **Erster Hardwaretest am 24.10.2026** (Board an COM4, Testnetz 192.168.1.0/24 ohne Internet und ohne NTP): Boot, Ethernet, HTTPS und mDNS funktionieren; Keypad, Relais, OTA und 2FA sind noch ungetestet. Befunde aus dem Hardwaretest:
 
 - **EMAC-Takt:** Mit Octal-PSRAM bei 200 MHz ist die MPLL fest auf 400 MHz; der EMAC-Treiber wählt im Modus „Auto“ zuerst die MPLL und scheitert (400/3 = 133 MHz statt 125 MHz, `emac_set_freq_ref_out_clock` → `ESP_FAIL`, kein MAC). Die CPLL (max. 320 MHz, 40-MHz-Raster) kann 125 MHz ebenfalls nicht liefern. Lösung: `CONFIG_ETH_EMAC_RGMII_TX_CLK_SRC_APLL=y` (APLL-Maximum ist genau 125 MHz; der 8-Bit-Referenzteiler liefert daraus auch 25 und 2,5 MHz für 100/10 Mbit). Alternative wäre PSRAM mit 250 MHz (MPLL 500 MHz), nicht getestet.
 - **GPIO40-„conflict“:** war kein Pinkonflikt, sondern das zweite `gpio_config()` auf dem Relais-Pin (main.c `relay_safe_init` und `door_init`). `door_init` setzt jetzt nur noch den Pegel.
@@ -263,7 +263,7 @@ Grobe Einschätzung: Phase 0–1 sind wegen des neuen Chips das größte Risiko 
 3. ~~Secure Boot per eFuse~~ **Entschieden (23.10.2026): vorerst nicht, eventuell später.** Signierte Updates ohne eFuse (Abschnitt 5).
 4. ~~Zertifikatsquelle~~ **Entschieden (23.10.2026): wie Casambi_Gateway / Casambi_Logic** – gerätespezifisch selbstsigniert beim ersten Boot, Upload von Zertifikat + Key über die Admin-Seite (Abschnitt 4).
 5. ~~Wi-Fi als Fallback~~ **Entschieden (24.10.2026): nein**, nur Ethernet.
-6. ~~Zusätzliche Auslöser?~~ **Entschieden (24.10.2026): ja, beides kommt rein** – API-Token für Hausautomation und mehrere Türen/Relais, Entwurf in Abschnitt 8a, Phase 8. Ein Keypad pro Gerät, bis zu 4 Türen (entschieden 24.10.2026). **Umsetzung freigegeben.**
+6. ~~Zusätzliche Auslöser?~~ **Entschieden (24.10.2026): ja, beides kommt rein** – API-Token für Hausautomation und mehrere Türen/Relais, Entwurf in Abschnitt 8a, Phase 8. Ein Keypad pro Gerät, bis zu 4 Türen (entschieden 24.10.2026). **Umgesetzt (Phase 8, `api_tokens.c`, `door_relay.c`, Settings v3), per API gegen das Board getestet.**
 7. ~~Schaltplan des CoreBoards vorhanden?~~ **Erledigt (24.10.2026):** Schaltplan liegt vor (Quellen), Pins geprüft, keine Konflikte.
 8. ~~Soll ich mit Phase 0 starten~~ **Erledigt (24.10.2026), Board läuft.**
 

@@ -13,6 +13,7 @@
     <a href="#dashboard">Übersicht</a>
     <a href="#codes">Codes</a>
     <a href="#log">Protokoll</a>
+    <a href="#api">API</a>
     <a href="#network">Netzwerk</a>
     <a href="#cert">Zertifikat</a>
     <a href="#firmware">Firmware</a>
@@ -59,9 +60,12 @@
   <section id="view-dashboard" class="view hidden">
     <div class="grid">
       <div class="card">
-        <h3>Tür</h3>
-        <div class="kv" id="dash-door"></div>
-        <button id="btn-open" class="primary big">Tür öffnen</button>
+        <h3>Türen</h3>
+        <div class="doors" id="dash-doors"></div>
+      </div>
+      <div class="card">
+        <h3>Keypad</h3>
+        <div class="kv" id="dash-keypad"></div>
       </div>
       <div class="card">
         <h3>Netzwerk</h3>
@@ -87,7 +91,7 @@
       </div>
       <p class="note warn hidden" id="codes-time-warn">⚠ Uhrzeit nicht synchron: Zeit- und Einmalcodes mit Gültigkeit werden derzeit abgelehnt, Dauercodes ohne Zeitfenster funktionieren.</p>
       <table class="log" id="codes-table">
-        <thead><tr><th>Name</th><th>Code</th><th>Typ</th><th>Gültigkeit</th><th>Nutzungen</th><th>Zuletzt</th><th>Status</th><th></th></tr></thead>
+        <thead><tr><th>Name</th><th>Code</th><th>Typ</th><th>Türen</th><th>Gültigkeit</th><th>Nutzungen</th><th>Zuletzt</th><th>Status</th><th></th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
@@ -101,6 +105,10 @@
           <label>Typ <select name="type"><option value="permanent">Dauercode</option><option value="timed">Zeitcode (von/bis)</option><option value="onetime">Einmalcode</option></select></label>
           <label><input type="checkbox" name="enabled" checked> Aktiv</label>
         </div>
+        <fieldset><legend>Türen</legend>
+          <div class="row" id="code-doors"></div>
+          <p class="hint">Am Keypad öffnet ein Code nur die dem Keypad zugeordnete Tür; über Web-UI und API gelten die hier gewählten Türen.</p>
+        </fieldset>
         <fieldset id="code-validity"><legend>Gültigkeit</legend>
           <div class="grid2">
             <label>Gültig ab <input name="valid_from_local" type="datetime-local"></label>
@@ -153,6 +161,57 @@
       <button id="btn-log-csv" class="secondary">CSV exportieren</button>
     </div>
     <table class="log" id="log-table"><thead><tr><th>Zeit</th><th>Kategorie</th><th>Meldung</th></tr></thead><tbody></tbody></table>
+  </section>
+
+  <!-- API-Token -->
+  <section id="view-api" class="view hidden">
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <h2 style="margin:0">API-Token <span class="hint" id="tokens-count"></span></h2>
+        <button id="btn-token-new">Neues Token</button>
+      </div>
+      <p class="hint">Für Drittsysteme wie Home Assistant. Ein Token wird als <code>Authorization: Bearer …</code> gesendet, nur über HTTPS. Der Klartext ist genau einmal nach dem Anlegen sichtbar; das Gerät speichert nur einen Hash.</p>
+      <table class="log" id="tokens-table">
+        <thead><tr><th>Name</th><th>ID</th><th>Türen</th><th>Rechte</th><th>Quelle</th><th>Gültig bis</th><th>Benutzt</th><th>Status</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="card hidden" id="token-new">
+      <h3>Neues Token – nur jetzt sichtbar</h3>
+      <p class="note warn">⚠ Dieses Token wird <strong>nicht noch einmal</strong> angezeigt. Jetzt in das Drittsystem eintragen oder im Passwortmanager ablegen.</p>
+      <pre id="token-plain" class="raw recovery"></pre>
+      <div class="row">
+        <button type="button" class="secondary" id="btn-token-copy">Kopieren</button>
+        <button type="button" class="secondary" id="btn-token-close">Schließen</button>
+      </div>
+    </div>
+    <div class="card hidden" id="token-editor">
+      <h3 id="token-editor-title">Neues Token</h3>
+      <form id="form-token">
+        <input type="hidden" name="id">
+        <div class="grid2">
+          <label>Name <input name="name" maxlength="31" required placeholder="z. B. Home Assistant"></label>
+          <label>Erlaubte Quelladresse <input name="allow_ip" placeholder="leer = jede; 192.168.1.10 oder 192.168.1.0/24 oder fd00::/64"></label>
+          <label>Gültig bis <input name="expires_local" type="datetime-local"></label>
+          <label><input type="checkbox" name="enabled" checked> Aktiv</label>
+        </div>
+        <fieldset><legend>Türen</legend><div class="row" id="token-doors"></div></fieldset>
+        <fieldset><legend>Rechte</legend>
+          <label><input type="checkbox" name="can_open" checked> Türen öffnen</label>
+          <label><input type="checkbox" name="can_status" checked> Status lesen (Türkontakt, Relais, Link)</label>
+        </fieldset>
+        <p class="hint">Ein Ablaufdatum wird nur geprüft, solange die Uhr des Geräts gültig ist; ohne NTP bleibt das Token gültig.</p>
+        <div class="row">
+          <button type="submit">Speichern</button>
+          <button type="button" class="secondary" id="btn-token-cancel">Abbrechen</button>
+        </div>
+      </form>
+    </div>
+    <div class="card">
+      <h3>Verwendung</h3>
+      <pre id="api-example" class="raw" style="max-height:none"></pre>
+      <p class="hint">Das Gerätezertifikat ist selbstsigniert. Im Drittsystem entweder den SHA-256-Fingerprint von der Zertifikat-Seite pinnen, ein eigenes Zertifikat hochladen oder die Prüfung nur im abgeschotteten LAN abschalten.</p>
+    </div>
   </section>
 
   <!-- Network -->
@@ -244,18 +303,18 @@
   <!-- System -->
   <section id="view-system" class="view hidden">
     <div class="card">
-      <h2>Tür und Relais</h2>
-      <form id="form-door">
-        <label>Relais-Impulsdauer (ms) <input name="relay_pulse_ms" type="number" min="500" max="30000" step="100"></label>
-        <label><input type="checkbox" name="relay_active_low"> Relaismodul ist Active-Low</label>
-        <label><input type="checkbox" name="door_contact_enable"> Türkontakt angeschlossen</label>
-        <label><input type="checkbox" name="exit_button_enable"> Austaster (REX) angeschlossen</label>
+      <h2>Türen und Relais</h2>
+      <p class="hint">Jede Tür hat ein Relais und optional Türkontakt und Austaster (Pins stehen in der Überschrift). Deaktivierte Türen lassen ihre Pins unberührt.</p>
+      <form id="form-doors">
+        <div id="doors-forms"></div>
         <button type="submit">Speichern</button>
       </form>
     </div>
     <div class="card">
       <h2>Keypad (RS232)</h2>
       <form id="form-keypad">
+        <label>Zugeordnete Tür <select name="door" id="keypad-door"></select></label>
+        <p class="hint">Genau ein Keypad je Gerät. Ein gültiger Code am Keypad öffnet nur diese Tür.</p>
         <label>Baudrate <select name="baud"><option>1200</option><option>2400</option><option>4800</option><option>9600</option><option>19200</option><option>38400</option><option>57600</option><option>115200</option></select></label>
         <label>Parität <select name="parity"><option value="0">keine (8N1)</option><option value="1">gerade (8E1)</option><option value="2">ungerade (8O1)</option></select></label>
         <label>Rahmenerkennung <select name="frame_mode"><option value="0">Abschlusszeichen</option><option value="1">Feste Länge</option><option value="2">Pause (Timeout)</option></select></label>
@@ -276,7 +335,7 @@
     </div>
     <div class="card">
       <h2>Sicherung</h2>
-      <p class="hint">Enthält Netzwerk-, Tür- und Keypad-Einstellungen sowie alle Codes. Admin-Passwort, Zertifikat und Key sind nicht enthalten.</p>
+      <p class="hint">Enthält Netzwerk-, Tür- und Keypad-Einstellungen sowie alle Codes. Admin-Passwort, API-Token, Zertifikat und Key sind nicht enthalten.</p>
       <div class="row">
         <a class="button secondary" href="/api/backup" download>Backup herunterladen</a>
         <input type="file" id="file-restore" accept=".json,application/json">
@@ -348,7 +407,7 @@
         <button id="btn-reboot" class="secondary">Neustart</button>
         <button id="btn-factory" class="danger">Werksreset</button>
       </div>
-      <p class="hint">Werksreset löscht alle Einstellungen, Codes, das Zertifikat und das Admin-Passwort.</p>
+      <p class="hint">Werksreset löscht alle Einstellungen, Codes, API-Token, das Zertifikat und das Admin-Passwort.</p>
     </div>
   </section>
 </main>
