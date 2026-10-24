@@ -5,8 +5,9 @@
  * Pins, UART-Defaults, Relais-Grenzen, Web-Server-Ports, Dateipfade.
  * Laufzeit-Einstellungen (IP-Adressen, Codes, Passwort ...) liegen in NVS (settings.c).
  *
- * Board: ESP32-S31-Function-CoreBoard-1. Externe Pins sind VORSCHLÄGE und werden
- * gegen den Schaltplan geprüft, sobald das Board da ist (siehe PLAN.md / docs/hardware.md).
+ * Board: ESP32-S31-Function-CoreBoard-1. Externe Pins am 24.10.2026 gegen den Schaltplan
+ * geprüft (docs/hardware.md): GPIO37-42 sind auf J2 frei, Codec liegt auf GPIO50-57,
+ * GPIO4 ist der PHY-Interrupt.
  */
 #pragma once
 
@@ -28,7 +29,7 @@
 #define CFG_ETH_PHY_ADDR          0
 
 /* ========================================================================
- * Extern angeschlossen (Vorschlag, später anpassen)
+ * Extern angeschlossen (J2-Header)
  * ====================================================================== */
 /* Keypad mit RS232-Ausgang über MAX3232-Pegelwandler */
 #define CFG_KEYPAD_UART_NUM       UART_NUM_1

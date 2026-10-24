@@ -11,9 +11,13 @@
 - Der S31 hat einen zweiten RGMII-Pad-Satz GPIO36–47 (TX_CLK 43, TX_CTL 37, TXD0-3 44/45/46/47, RX_CLK 42, RX_CTL 36, RXD0-3 41/40/39/38); das Board nutzt Satz 0, deshalb sind GPIO37–42 am J2 als normale GPIOs frei. GPIO29 und GPIO41 existieren auf dem S31 nicht als GPIO
 - Konsole/Flash: USB-Serial/JTAG (VID 303A:1001), Windows COM4; pyserial ohne `dtr=False, rts=False` löst beim Öffnen einen Reset aus
 - WS2812-LED GPIO60, BOOT GPIO61, Konsole UART0 GPIO58/59
-- Audiocodec ES8311 + Mikro/Lautsprecher onboard: **Pins unbekannt**, Schaltplan besorgen, bevor externe Pins festgezurrt werden
+- Audiocodec ES8311 + Mikro/Lautsprecher (Schaltplan V1.0): I2C SCL GPIO50, SDA GPIO51; I2S MCLK 52, SCLK 53, ASDOUT 54, LRCK 55, DSDIN 56; PA_CTRL (Verstärker NS4150B) GPIO57. Diese Pins liegen nicht auf J2, kein Konflikt mit unseren Pins
+- PHY-Interrupt ETH_INTN an GPIO4 (J2-32, über R83 0 Ω), von der Firmware nicht genutzt. 32-kHz-Quarz-Footprint an GPIO0/GPIO1 (Y1 unbestückt)
+- PHY-Straps (Default-Bestückung): PHYAD = 0, RXDLY Pull-up (2 ns RX-Delay), TXDLY Pull-down, PLLOFF aus, CFG_LDO → 3,3-V-I/O
+- Zwei USB-C: J1 = nativer USB-Serial/JTAG (GPIO33/34, VID 303A:1001, so haben wir geflasht), J3 = CH9102X USB-UART an UART0 GPIO58/59 mit Auto-Program. USB-A ist ein Host-Port (TPS2051, 500 mA)
+- Schaltplan: [esp32-s31-function-coreboard-1-schematics.pdf](esp32-s31-function-coreboard-1-schematics.pdf) (Kopie im Repo, Original: https://dl.espressif.com/schematics/esp32-s31-function-coreboard-1-schematics.pdf)
 
-## J2-Header (40-polig, laut User-Guide)
+## J2-Header (40-polig, laut Schaltplan V1.0 bestätigt)
 
 | Pin | Signal | Pin | Signal |
 |---|---|---|---|
@@ -32,13 +36,13 @@
 | 25 | GPIO35 | 26 | GPIO20 (SDIO D0) |
 | 27 | GPIO21 (SDIO D1) | 28 | GPIO22 (SDIO D2) |
 | 29 | GPIO23 (SDIO D3) | 30 | GPIO24 (SDIO CLK) |
-| 31 | GPIO25 (SDIO CMD) | 32 | GPIO4 |
+| 31 | GPIO25 (SDIO CMD) | 32 | GPIO4 (ETH_INTN, nicht frei) |
 | 33 | GND | 34 | GND |
 | 35 | 3V3 | 36 | 3V3 |
 | 37 | GND | 38 | GND |
 | 39 | 5V | 40 | 5V |
 
-## Externe Beschaltung (Vorschlag)
+## Externe Beschaltung
 
 ```
 Keypad (RS232) ──► MAX3232-Modul (3,3 V) ──► GPIO38 (UART1 RX), optional GPIO37 (TX)

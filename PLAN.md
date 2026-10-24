@@ -16,17 +16,18 @@ Das „Function-CoreBoard1“ ist das **ESP32-S31-Function-CoreBoard-1** von Esp
 | Modul | ESP32-S31-WROOM-3: 16 MB Flash, 16 MB PSRAM |
 | Netzwerk | Gigabit-Ethernet (RJ45) über **YT8531-PHY per RGMII**, zusätzlich Wi-Fi 6, BLE 5.4, 802.15.4 |
 | Ethernet-Pins | MDC = GPIO5, MDIO = GPIO6, PHY-Reset = GPIO7; RGMII-Datenpins GPIO8–19 (IO-MUX-Set 0 laut `esp_hal_emac/esp32s31/emac_periph.c`) |
-| USB | Type-C USB-Serial/JTAG, Type-C USB-UART-Bridge (Konsole auf GPIO58/59), USB-A Host |
-| Sonstiges | WS2812-LED an GPIO60, BOOT an GPIO61, ES8311-Audiocodec + Mikro/Lautsprecher (Pins nicht dokumentiert), SDIO-Pins GPIO20–25 auf J2 |
-| Frei auf J2 (voraussichtlich) | GPIO0–4, 35–49, 20–25 (SDIO); 60/61 belegt |
+| USB | Type-C J1 USB-Serial/JTAG (nativ, GPIO33/34, meldet sich als VID 303A:1001), Type-C J3 USB-UART-Bridge CH9102X (Konsole GPIO58/59, Auto-Program über DTR/RTS), USB-A Host (TPS2051, 500 mA) |
+| Sonstiges | WS2812-LED an GPIO60 (über Pegelwandler Q1, 5 V), BOOT an GPIO61, ES8311-Audiocodec an **GPIO50–57** (I2C SCL 50 / SDA 51, I2S MCLK 52, SCLK 53, ASDOUT 54, LRCK 55, DSDIN 56, PA_CTRL 57), PHY-Interrupt ETH_INTN an **GPIO4**, Footprint für 32-kHz-Quarz an GPIO0/GPIO1 (unbestückt), SDIO-Pins GPIO20–25 auf J2 |
+| Frei auf J2 (laut Schaltplan) | GPIO2, 3, 35–40, 42–49, 20–25 (SDIO); GPIO0/1 nur ohne 32-kHz-Quarz, GPIO4 ist PHY-Interrupt, 60/61 belegt. GPIO50–57 (Codec) liegen nicht auf J2 |
 | Framework | **Nur ESP-IDF ≥ 6.1**. Arduino-Core gibt es für den S31 noch nicht (kommt erst mit arduino-esp32 4.0). |
 | Sicherheits-Errata | ECDSA-Secure-Boot auf dem S31 fehlerhaft → **RSA-3072** für Signaturen verwenden |
 
 Konsequenzen:
-- Alle Pinzuweisungen unten sind **Vorschläge** und müssen gegen den Schaltplan des CoreBoards geprüft werden (die Audiocodec-Pins sind nirgends dokumentiert). Deshalb liegen alle Pins zentral in `main/config.h`.
+- Pinzuweisungen unten sind am 24.10.2026 **gegen den Schaltplan geprüft** (siehe Quellen): Keypad/Relais/Kontakte auf GPIO37–42 kollidieren weder mit Codec (GPIO50–57) noch mit Ethernet (GPIO4–19). Alle Pins liegen weiterhin zentral in `main/config.h`.
+- PHY-Straps laut Schaltplan (Default-Bestückung): PHYAD[2:0] = 000 → PHY-Adresse 0, RXDLY Pull-up (2 ns RX-Delay hardwareseitig an), TXDLY Pull-down, PLLOFF aus. Die Software setzt die Delays zusätzlich über die Extended-Register; Link 1000 Mbit/s und Datenverkehr funktionieren damit.
 - Ein reines Arduino-Projekt (wie bei `esp32_usb_reader`) geht nicht. Wir arbeiten mit **ESP-IDF 6.1 in C**, Projektstruktur so, dass sie mit `idf.py` **und** mit PlatformIO (`framework = espidf`) baut.
 
-### Vorgeschlagene Pinbelegung (zu verifizieren)
+### Pinbelegung (gegen Schaltplan geprüft 24.10.2026)
 
 | Funktion | GPIO | J2-Pin | Bemerkung |
 |---|---|---|---|
@@ -176,9 +177,33 @@ Speicherung: NVS-Namespace `codes`, bis ~200 Einträge, Codes im Klartext. Ehrli
 ## 8. Relais / Tür
 
 - Impulsdauer 0,5–30 s konfigurierbar (Default 3 s), Firmware erzwingt die Obergrenze, Timer per `esp_timer`, Relais-Pin beim Boot definiert Low (bzw. inaktiv bei Active-Low-Modul).
-- Auslöser: gültiger Code, Button auf der Webseite (protokolliert mit Benutzer), REX-Taster, später optional API-Token für Hausautomation.
+- Auslöser: gültiger Code, Button auf der Webseite (protokolliert mit Benutzer), REX-Taster, API-Token für Hausautomation (Abschnitt 8a).
 - Türkontakt: Statusanzeige, Protokoll „offen ohne Freigabe“ (Alarmhinweis), Haltezeit-Überwachung.
 - Watchdog (Task-WDT) + Brownout-Erkennung, damit das Relais nie hängen bleibt.
+
+---
+
+## 8a. Mehrere Türen und API-Token (Entwurf, Entscheidung 24.10.2026)
+
+**Mehrere Türen**
+
+- `CFG_MAX_DOORS` (Vorschlag 4) in `config.h`; freie J2-Pins laut Schaltplan: GPIO2, 3, 35, 36, 43–49 (GPIO4 ist PHY-Interrupt, GPIO0/1 Quarz-Footprint). Je Tür Relais-Pin, optional Kontakt- und REX-Pin, Pins bleiben Compile-Zeit-Tabelle in `config.h`.
+- `settings_door_t` wird zu `doors[CFG_MAX_DOORS]` mit `enabled`, `name[24]`, `relay_pulse_ms`, `relay_active_low`, `door_contact_enable`, `exit_button_enable` → `SETTINGS_VERSION 3` (Defaults statt Migration, noch keine Geräte im Feld).
+- Codes bekommen eine Bitmaske `doors` (Bit n = Tür n), Default alle; `codes.json` erweitert, fehlendes Feld = alle Türen (abwärtskompatibel zu bestehenden Backups).
+- **Genau ein Keypad pro Gerät** (Entscheidung 24.10.2026), fest einer Tür zugeordnet (`keypad.door`, Default Tür 1, in der UI wählbar). Ein gültiger Code am Keypad öffnet nur diese Tür, und nur wenn seine Türmaske sie enthält. Die übrigen Türen werden ausschließlich über Web-UI, API-Token und REX-Taster bedient.
+- `door_relay.c` wird instanzbasiert (`door_open(idx, reason, ms)`), eigener `esp_timer` je Tür; Status-API liefert `doors[]`; Web-UI zeigt je Tür Zustand und Öffnen-Button; Protokoll nennt den Türnamen.
+
+**API-Token (Hausautomation / Home Assistant)**
+
+- **Format** `ks1.<id>.<secret>`: `ks1` = Präfix/Version (erkennbar in Logs und Secret-Scannern), `id` = 6 Byte Zufall als Base64url (8 Zeichen, nur zum Nachschlagen, darf im Protokoll stehen), `secret` = **32 Byte = 256 Bit** Zufall als Base64url (43 Zeichen). Gesamt 55 Zeichen.
+- **Warum 256 Bit reichen:** Ein Angreifer kann Token nur online gegen das Gerät probieren. Schon 128 Bit sind bei jedem denkbaren Durchsatz unerratbar; 256 Bit kosten nichts extra und entsprechen dem Session-Cookie. Entscheidend ist nicht die Länge, sondern die Zufallsquelle → Abschnitt 9 (`bootloader_random_enable()`), sonst ist auch ein langes Token vorhersagbar.
+- **Speicherung** nur als SHA-256(secret) in `/storage/tokens.json` (id, Name, Hash, Türmaske, Rechte, erstellt, zuletzt benutzt, aktiv, optional IP-Allowlist, optional Ablauf). Kein PBKDF2 nötig, weil das Secret selbst 256 Bit Entropie hat; Vergleich in konstanter Zeit. Das Klartext-Token zeigt die UI genau einmal. Max. 8 Token.
+- **Verwendung:** `Authorization: Bearer <token>` auf `POST /api/v1/doors/<n>/open` (Body optional `{pulse_ms}` bis zur Obergrenze) und `GET /api/v1/status` (Türzustände, Kontakt, Link). Nur über HTTPS; niemals in der URL (landet sonst in Logs/Proxies). Kein Cookie, kein CSRF, keine anderen Routen für Token.
+- **Rechte je Token:** Türmaske und Aktion (`open`, `status`); optional Quell-IP/Präfix (IPv4 und IPv6) – im LAN der billigste zweite Faktor; optional Ablaufdatum, das nur ausgewertet wird, wenn die Uhr gültig ist (sonst gilt das Token weiter, damit Installationen ohne NTP nicht ausfallen; Default: kein Ablauf).
+- **Abwehr:** Rate-Limit pro Quell-IP und global für fehlgeschlagene Bearer-Versuche (wie Login-Sperre), jede Nutzung und jeder Fehlversuch im Protokoll mit Token-id/Name, nie mit Secret. Sofortiges Sperren/Löschen in der UI; Werksreset löscht alle Token.
+- **Transport-Vertrauen:** Das Gerätezertifikat ist selbstsigniert. Das Drittsystem soll den SHA-256-Fingerprint pinnen (steht unter `/api/cert`) oder ein eigenes Zertifikat per Upload nutzen; `verify_ssl: false` nur im abgeschotteten LAN.
+- Verwaltung nur in der Admin-UI (Session + CSRF): anlegen, Türen zuweisen, sperren, löschen. Werksreset löscht die Token.
+- **Home Assistant:** `rest_command` mit `Authorization: Bearer …` auf `/api/v1/doors/1/open`, `rest`-Sensor auf `/api/v1/status` für Türkontakt und Relaiszustand. Funktioniert ohne gültige Uhr.
 
 ---
 
@@ -187,6 +212,7 @@ Speicherung: NVS-Namespace `codes`, bis ~200 Einträge, Codes im Klartext. Ehrli
 - Erststart: Setup-Assistent erzwingt ein Admin-Passwort (kein Default-Passwort). Passwort-Hash PBKDF2-HMAC-SHA256 (mbedTLS), 100k Iterationen.
 - Sessions: 32-Byte-Zufalls-Cookie, `HttpOnly; Secure; SameSite=Strict`, Ablauf nach 30 min Inaktivität; CSRF-Token für alle schreibenden Requests; Login-Rate-Limit.
 - Keine Geheimnisse in der Firmware; der Signaturschlüssel liegt nur auf dem Build-Rechner.
+- **Zufallsquelle:** Der S31-Bootloader schaltet den TRNG vor dem App-Start ab; ohne Wi-Fi/BT liefert `esp_random()` dann nur ein zählerartiges Muster (am Board gemessen 24.10.2026: `fbceedda fec8eadc e0d5e8df …`). `main.c` ruft deshalb als Erstes `bootloader_random_enable()` auf und lässt die Entropiequelle dauerhaft an. Alle Geheimnisse (Session-Cookies, EC-Schlüssel des Zertifikats, PBKDF2-Salt, TOTP-Secret, API-Token) laufen über `esp_fill_random()` bzw. die PSA-API, die ebenfalls `esp_fill_random()` als Entropie nutzt. Konsequenz: **kein ADC** in dieser Firmware (Konflikt mit der SAR-ADC-Entropiequelle).
 - Protokollierung aller sicherheitsrelevanten Ereignisse, Ringpuffer (RAM) + rotierende Datei auf LittleFS.
 - Werksreset per BOOT-Taster (10 s) löscht NVS inkl. Zertifikat und Admin-Passwort.
 
@@ -204,6 +230,7 @@ Speicherung: NVS-Namespace `codes`, bis ~200 Einträge, Codes im Klartext. Ehrli
 | 5 | Signierte OTA: Signierskripte, Upload, Verifikation, Rollback | **Code fertig, kompiliert**; Test: unsigniertes Image ablehnen, Stromausfall während Update |
 | 6 | Härtung + Tests: Rate-Limits, WDT, DST-Wechsel, IPv6-only-Netz, Zert-Rotation, Lasttest TLS, Doku | Rate-Limits, Werksreset per BOOT-Taster, Protokolldatei erledigt; Tests warten auf Hardware |
 | 7 | **2FA** (Entscheidung 24.10.2026): TOTP RFC 6238 + 8 Recovery-Codes, strenge Variante ohne synchrone Uhr, Einrichtung über Admin-Seite mit QR-Code, keine externe RTC | **Code fertig, kompiliert**; Test mit Authenticator-App offen |
+| 8 | **API-Token + mehrere Türen** (Entscheidung 24.10.2026, Abschnitt 8a): bis zu 4 Türen als Array in Settings und Codes, Relais-/Kontakt-/REX-Pins je Tür, ein Keypad fest einer Tür zugeordnet, Token-Verwaltung in der UI, `/api/v1/doors/<n>/open` mit Bearer-Token | **in Arbeit**, Reihenfolge: erst Türen-Datenmodell (Settings-Version 3), dann Token |
 
 ### Umsetzungsstand 24.10.2026
 
@@ -213,6 +240,7 @@ Alle Module aus Abschnitt 2 sind implementiert und bauen fehlerfrei mit ESP-IDF 
 - **GPIO40-„conflict“:** war kein Pinkonflikt, sondern das zweite `gpio_config()` auf dem Relais-Pin (main.c `relay_safe_init` und `door_init`). `door_init` setzt jetzt nur noch den Pegel.
 - Der S31 hat zwei RGMII-Pad-Sätze (GPIO8–19 und GPIO36–47); das Board nutzt Satz 0, deshalb sind GPIO36–47 am J2 frei. Die MSPI-Pins des S31 sind dedizierte Pads, die in `spi_pins.h` eingetragenen GPIO26–32 werden trotzdem vom Treiber reserviert (IDF-Fehler, für uns ohne Folgen).
 - Die Coredump-Partition enthielt Altdaten („Incorrect size of core dump image“); einmalig gelöscht mit `esptool erase_region 0x12000 0x10000`.
+- **Schwacher Zufall behoben:** `esp_random()` lieferte vor `bootloader_random_enable()` ein Zählermuster (siehe Abschnitt 9). Das am 24.10.2026 zuvor erzeugte Gerätezertifikat war damit unbrauchbar; die Storage-Partition wurde gelöscht und das Zertifikat mit echtem Zufall neu erzeugt. Geräte, die mit einer Firmware vor dieser Korrektur eingerichtet wurden, müssen Zertifikat, Passwort und 2FA neu anlegen (Werksreset).
 - pyserial öffnet den Port standardmäßig mit DTR/RTS aktiv und löst damit über USB-Serial/JTAG einen Reset aus; zum Mitlesen ohne Reset `dtr=False, rts=False` vor `open()` setzen.
 
 Besonderheiten gegenüber dem ursprünglichen Plan:
@@ -234,9 +262,9 @@ Grobe Einschätzung: Phase 0–1 sind wegen des neuen Chips das größte Risiko 
 2. **Relais/Türöffner:** Spannung/Strom des Türöffners, vorhandenes Relaismodul (Active-Low?), Fail-safe- oder Fail-secure-Öffner?
 3. ~~Secure Boot per eFuse~~ **Entschieden (23.10.2026): vorerst nicht, eventuell später.** Signierte Updates ohne eFuse (Abschnitt 5).
 4. ~~Zertifikatsquelle~~ **Entschieden (23.10.2026): wie Casambi_Gateway / Casambi_Logic** – gerätespezifisch selbstsigniert beim ersten Boot, Upload von Zertifikat + Key über die Admin-Seite (Abschnitt 4).
-5. **Wi-Fi als Fallback** gewünscht?
-6. **Zusätzliche Auslöser:** API-Token für Hausautomation/Home Assistant? Mehrere Türen/Relais?
-7. **Schaltplan des CoreBoards** vorhanden? Ohne ihn bleiben die Pins für Keypad/Relais vorläufig.
+5. ~~Wi-Fi als Fallback~~ **Entschieden (24.10.2026): nein**, nur Ethernet.
+6. ~~Zusätzliche Auslöser?~~ **Entschieden (24.10.2026): ja, beides kommt rein** – API-Token für Hausautomation und mehrere Türen/Relais, Entwurf in Abschnitt 8a, Phase 8. Ein Keypad pro Gerät, bis zu 4 Türen (entschieden 24.10.2026). **Umsetzung freigegeben.**
+7. ~~Schaltplan des CoreBoards vorhanden?~~ **Erledigt (24.10.2026):** Schaltplan liegt vor (Quellen), Pins geprüft, keine Konflikte.
 8. ~~Soll ich mit Phase 0 starten~~ **Erledigt (24.10.2026), Board läuft.**
 
 ---
@@ -244,6 +272,7 @@ Grobe Einschätzung: Phase 0–1 sind wegen des neuen Chips das größte Risiko 
 ## 12. Quellen
 
 - Board-User-Guide: https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32s31/esp32-s31-function-coreboard-1/user_guide.html
+- Board-Schaltplan (V1.0, 13.05.2026): [docs/esp32-s31-function-coreboard-1-schematics.pdf](docs/esp32-s31-function-coreboard-1-schematics.pdf), Original https://dl.espressif.com/schematics/esp32-s31-function-coreboard-1-schematics.pdf
 - ESP-IDF Ethernet-Beispiel (YT8531-Init): https://github.com/espressif/esp-idf/blob/master/examples/ethernet/basic/
 - ESP32-S31 EMAC-Pins: `components/esp_hal_emac/esp32s31/emac_periph.c` (ESP-IDF master)
 - ESPHome-PR mit S31-RGMII-Pins: https://github.com/esphome/esphome/pull/17277

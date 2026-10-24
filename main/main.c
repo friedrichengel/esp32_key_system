@@ -17,6 +17,7 @@
 #include "esp_ota_ops.h"
 #include "nvs_flash.h"
 #include "driver/gpio.h"
+#include "bootloader_random.h"
 
 #include "config.h"
 #include "settings.h"
@@ -33,6 +34,17 @@
 #include "ota_update.h"
 
 static const char *TAG = "main";
+
+static void rng_init(void)
+{
+    /* Der Bootloader schaltet den TRNG vor dem App-Start ab ("Disabling RNG early entropy
+     * source"). Ohne Wi-Fi/BT fuettert auf dem S31 nichts den Zufallsgenerator nach, und
+     * esp_random() liefert nur ein zaehlerartiges Muster (auf dem Board gemessen 24.10.2026).
+     * Davon haengen Session-Cookies, Zertifikatsschluessel, TOTP-Secrets und API-Token ab.
+     * Deshalb die Entropiequelle dauerhaft einschalten. Achtung: nicht kompatibel mit
+     * gleichzeitiger ADC-Nutzung; die Firmware verwendet keinen ADC. */
+    bootloader_random_enable();
+}
 
 static void relay_safe_init(void)
 {
@@ -114,6 +126,7 @@ static void log_banner(void)
 
 void app_main(void)
 {
+    rng_init();                 /* vor allem, was Zufall braucht */
     relay_safe_init();
     nvs_init();
     log_banner();

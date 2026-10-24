@@ -35,6 +35,10 @@ CONFIG_ESP_TASK_WDT_INIT=y
 CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
 CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
 
+# Kein Wi-Fi, kein Bluetooth (Entscheidung 24.10.2026, PLAN.md Nr. 5): spart Flash/RAM
+CONFIG_ESP_WIFI_ENABLED=n
+CONFIG_BT_ENABLED=n
+
 # --- Netzwerk: Ethernet (RGMII, YT8531) ---------------------------------------
 CONFIG_ETH_ENABLED=y
 CONFIG_ETH_USE_ESP32_EMAC=y

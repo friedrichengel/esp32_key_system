@@ -41,7 +41,7 @@ pio device monitor          # 115200 Baud
 ```
 main/
 ├── main.c              Boot-Reihenfolge, Heartbeat, BOOT-Taster-Werksreset, OTA-Bestätigung
-├── config.h            ALLE Pins und Compile-Zeit-Konstanten (Pins sind Vorschläge, siehe PLAN.md §1)
+├── config.h            ALLE Pins und Compile-Zeit-Konstanten (gegen Schaltplan geprüft, siehe PLAN.md §1)
 ├── settings.[ch]       Laufzeit-Konfiguration als NVS-Blob (Namespace "keysys")
 ├── event_log.[ch]      Ringpuffer (PSRAM) + Datei /storage/events.log mit Rotation
 ├── storage.[ch]        LittleFS unter /storage, atomares Schreiben (tmp + rename)
@@ -60,11 +60,11 @@ main/
 ├── ota_update.[ch]     esp_ota_* mit Signaturprüfung, Rollback, Info
 └── web/                index.html, app.js, style.css (Vanilla, deutsch), qrcode.js (vendored, MIT, Kazuhiko Arase)
 tools/                  embed_web_assets.py, pio_pre_build.py, sign_firmware.py, gen_signing_key.sh, sign_firmware.sh
-docs/                   hardware.md (Pins, J2-Header), api.md (REST-API)
+docs/                   hardware.md (Pins, J2-Header), api.md (REST-API), Board-Schaltplan (PDF)
 keys/                   nur .gitkeep; private Schlüssel lokal
 ```
 
-## Hardware (Vorschlag, gegen Schaltplan prüfen)
+## Hardware (gegen Schaltplan geprüft 24.10.2026)
 
 | Funktion | GPIO | Hinweis |
 |---|---|---|
@@ -78,6 +78,7 @@ keys/                   nur .gitkeep; private Schlüssel lokal
 
 - Pins und Grenzen nur in `config.h`; Laufzeitwerte nur über `g_settings` + `settings_save()`.
 - Jede sicherheitsrelevante Aktion über `event_log(EV_*, ...)`; **Codes nie protokollieren** (nur Länge/Name).
+- Zufall nur über `esp_fill_random()` / PSA. `rng_init()` in `main.c` (`bootloader_random_enable()`) muss der erste Aufruf bleiben, sonst liefert der S31 ohne Wi-Fi nur Pseudozufall. **Keinen ADC verwenden** (Konflikt mit der Entropiequelle).
 - Schreibende API-Routen verlangen Session-Cookie **und** Header `X-CSRF-Token` (`require_auth_csrf`).
 - Deutsch in UI und Protokolltexten, ASCII-Umschreibungen (ue/oe/ae) in Log-Strings, Umlaute in HTML.
 - Compiler-Warnungen sind Fehler (`-Werror` im IDF-Default), insbesondere `format-truncation`.
