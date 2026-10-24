@@ -86,4 +86,4 @@ keys/                   nur .gitkeep; private Schlüssel lokal
 
 ## Stand
 
-Phasen 0–5 aus PLAN.md sind implementiert und bauen fehlerfrei. Noch kein Test auf Hardware (Board war nicht angeschlossen). Offene Punkte: PLAN.md §10 „Umsetzungsstand“ und §11.
+Phasen 0–5 aus PLAN.md sind implementiert und bauen fehlerfrei. Erster Hardwaretest 24.10.2026 (Board an COM4): Boot, Ethernet (1000 Mbit/s, DHCP, SLAAC), HTTPS über IPv4/IPv6 und mDNS laufen. Der RGMII-Sendetakt muss aus der APLL kommen (`CONFIG_ETH_EMAC_RGMII_TX_CLK_SRC_APLL`), weil die MPLL vom PSRAM belegt ist. Testnetz hat weder Internet noch NTP, die Uhr bleibt dort ungültig. Ungetestet: Keypad, Relais, OTA, 2FA, Browser-Login. Offene Punkte: PLAN.md §10 „Umsetzungsstand“ und §11.

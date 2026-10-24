@@ -125,14 +125,9 @@ static void input_task(void *arg)
 
 esp_err_t door_init(void)
 {
-    gpio_config_t out = {
-        .pin_bit_mask = 1ULL << CFG_RELAY_GPIO,
-        .mode = GPIO_MODE_OUTPUT,
-        .pull_up_en = GPIO_PULLUP_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE,
-    };
-    gpio_config(&out);
+    /* Der Relais-Pin ist bereits in main.c (relay_safe_init) als Ausgang konfiguriert;
+     * ein zweites gpio_config() auf demselben Pin meldet "conflict found". Hier nur
+     * den Pegel mit der jetzt aus NVS bekannten Polaritaet setzen. */
     relay_write(false);
 
     gpio_config_t in = {

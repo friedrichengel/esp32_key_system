@@ -7,6 +7,9 @@
 - RGMII-Datenpins (IO-MUX-Set 0 laut ESP-IDF `esp32s31/emac_periph.c`):
   TX_CLK 13, TX_CTL 12, TXD0-3 8/9/10/11, RX_CLK 14, RX_CTL 15, RXD0-3 19/18/17/16
 - YT8531 nach Reset: Autonegotiation wieder einschalten, RX/TX-Delay ≈ 2 ns über Extended-Register 0x1E/0x1F (0xA001 Bit 8; 0xA003 Stufe 13)
+- **Bestätigt auf Hardware (24.10.2026):** Link 1000 Mbit/s Vollduplex mit den Delays oben. RGMII-Sendetakt zwingend aus der APLL (`CONFIG_ETH_EMAC_RGMII_TX_CLK_SRC_APLL=y`), weil die MPLL durch das Octal-PSRAM (200 MHz) auf 400 MHz liegt und daraus kein 125-MHz-Takt teilbar ist
+- Der S31 hat einen zweiten RGMII-Pad-Satz GPIO36–47 (TX_CLK 43, TX_CTL 37, TXD0-3 44/45/46/47, RX_CLK 42, RX_CTL 36, RXD0-3 41/40/39/38); das Board nutzt Satz 0, deshalb sind GPIO37–42 am J2 als normale GPIOs frei. GPIO29 und GPIO41 existieren auf dem S31 nicht als GPIO
+- Konsole/Flash: USB-Serial/JTAG (VID 303A:1001), Windows COM4; pyserial ohne `dtr=False, rts=False` löst beim Öffnen einen Reset aus
 - WS2812-LED GPIO60, BOOT GPIO61, Konsole UART0 GPIO58/59
 - Audiocodec ES8311 + Mikro/Lautsprecher onboard: **Pins unbekannt**, Schaltplan besorgen, bevor externe Pins festgezurrt werden
 

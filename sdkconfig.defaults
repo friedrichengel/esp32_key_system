@@ -41,6 +41,10 @@ CONFIG_ETH_USE_ESP32_EMAC=y
 # RGMII-Datenpfad: Default-GPIO-Set des S31 (GPIO8-19) – siehe board_pins.h / PLAN.md
 CONFIG_ETH_DMA_RX_BUFFER_NUM=20
 CONFIG_ETH_DMA_TX_BUFFER_NUM=10
+# RGMII-Sendetakt (125 MHz) aus der APLL: Die MPLL ist durch das Octal-PSRAM (200 MHz)
+# auf 400 MHz festgelegt, daraus laesst sich kein 125-MHz-Takt teilen (400/3 = 133 MHz),
+# die CPLL (max. 320 MHz, 40-MHz-Raster) ebenfalls nicht. Gemessen am Board 24.10.2026.
+CONFIG_ETH_EMAC_RGMII_TX_CLK_SRC_APLL=y
 
 # --- Netzwerk: lwIP, IPv4 + IPv6 -------------------------------------------
 CONFIG_LWIP_IPV6=y

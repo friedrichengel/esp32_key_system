@@ -196,9 +196,9 @@ Speicherung: NVS-Namespace `codes`, bis ~200 Einträge, Codes im Klartext. Ehrli
 
 | Phase | Inhalt | Ergebnis / Abnahme |
 |---|---|---|
-| 0 | Toolchain-Bring-up: IDF 6.1 installieren, Gerüst bauen, LED blinkt, Konsole, Partitionstabelle, PlatformIO-Fork testen | **Build erledigt (23.10.2026)**, Flash-/Boot-Test wartet auf das Board |
-| 1 | Ethernet RGMII + YT8531-Workarounds, DHCP/SLAAC, SNTP, mDNS, Hostname | **Code fertig, kompiliert (24.10.2026)**; Hardwaretest offen: `ping -4/-6 <host>.local`, Uhrzeit, Link 1000 Mbit |
-| 2 | HTTPS-Server, selbstsigniertes Zert, Login/Session, UI-Grundgerüst, Übersicht | **Code fertig, kompiliert**; Test: Login über IPv4 und IPv6, Zert-Details im Browser |
+| 0 | Toolchain-Bring-up: IDF 6.1 installieren, Gerüst bauen, LED blinkt, Konsole, Partitionstabelle, PlatformIO-Fork testen | **Erledigt (24.10.2026)**: Flash über USB-Serial/JTAG (COM4), Boot sauber, PSRAM 16 MB erkannt, LittleFS gemountet |
+| 1 | Ethernet RGMII + YT8531-Workarounds, DHCP/SLAAC, SNTP, mDNS, Hostname | **Auf Hardware getestet (24.10.2026)**: Link 1000 Mbit/s, DHCP-IPv4, SLAAC (link-local + global), `ping keysystem.local` über IPv6 ok. Voraussetzung: RGMII-Sendetakt aus der **APLL** (`CONFIG_ETH_EMAC_RGMII_TX_CLK_SRC_APLL`), siehe Umsetzungsstand. SNTP im Testnetz nicht prüfbar (kein NTP, kein Internet) |
+| 2 | HTTPS-Server, selbstsigniertes Zert, Login/Session, UI-Grundgerüst, Übersicht | **Teilweise getestet (24.10.2026)**: HTTP→HTTPS-Redirect, TLS über IPv4 und IPv6, Zertifikat (EC, CN=keysystem-<MAC>, SAN keysystem.local), `/api/session` meldet `setup_required`, geschützte Routen liefern 401. Offen: Ersteinrichtung und Login im Browser |
 | 3 | Settings in NVS, Netzwerk-Seite (statisch v4/v6), Zertifikats-Upload, Backup/Restore, DHCP-Rückfall | **Code fertig, kompiliert**; DHCP-Rückfall auf 192.168.1.50/24 nach 20 s ohne Lease (wie Casambi `check_dhcp_fallback`), 192.168.1.50 ist auch die Vorgabe für „statisch“ |
 | 4 | Keypad-UART + Lernmodus, Relais-Modul, Codes-DB + UI, Protokoll | **Code fertig, kompiliert**; Test mit echtem Keypad und Relais offen |
 | 5 | Signierte OTA: Signierskripte, Upload, Verifikation, Rollback | **Code fertig, kompiliert**; Test: unsigniertes Image ablehnen, Stromausfall während Update |
@@ -207,14 +207,22 @@ Speicherung: NVS-Namespace `codes`, bis ~200 Einträge, Codes im Klartext. Ehrli
 
 ### Umsetzungsstand 24.10.2026
 
-Alle Module aus Abschnitt 2 sind implementiert und bauen fehlerfrei mit ESP-IDF 6.1 (Flash 1,04 MB von 4 MB, RAM 35 KB statisch). **Nichts davon ist auf Hardware getestet**, das Board war noch nicht angeschlossen. Besonderheiten gegenüber dem ursprünglichen Plan:
+Alle Module aus Abschnitt 2 sind implementiert und bauen fehlerfrei mit ESP-IDF 6.1 (Flash 1,04 MB von 4 MB, RAM 35 KB statisch). **Erster Hardwaretest am 24.10.2026** (Board an COM4, Testnetz 192.168.1.0/24 ohne Internet und ohne NTP): Boot, Ethernet, HTTPS und mDNS funktionieren; Keypad, Relais, OTA und 2FA sind noch ungetestet. Befunde aus dem Hardwaretest:
+
+- **EMAC-Takt:** Mit Octal-PSRAM bei 200 MHz ist die MPLL fest auf 400 MHz; der EMAC-Treiber wählt im Modus „Auto“ zuerst die MPLL und scheitert (400/3 = 133 MHz statt 125 MHz, `emac_set_freq_ref_out_clock` → `ESP_FAIL`, kein MAC). Die CPLL (max. 320 MHz, 40-MHz-Raster) kann 125 MHz ebenfalls nicht liefern. Lösung: `CONFIG_ETH_EMAC_RGMII_TX_CLK_SRC_APLL=y` (APLL-Maximum ist genau 125 MHz; der 8-Bit-Referenzteiler liefert daraus auch 25 und 2,5 MHz für 100/10 Mbit). Alternative wäre PSRAM mit 250 MHz (MPLL 500 MHz), nicht getestet.
+- **GPIO40-„conflict“:** war kein Pinkonflikt, sondern das zweite `gpio_config()` auf dem Relais-Pin (main.c `relay_safe_init` und `door_init`). `door_init` setzt jetzt nur noch den Pegel.
+- Der S31 hat zwei RGMII-Pad-Sätze (GPIO8–19 und GPIO36–47); das Board nutzt Satz 0, deshalb sind GPIO36–47 am J2 frei. Die MSPI-Pins des S31 sind dedizierte Pads, die in `spi_pins.h` eingetragenen GPIO26–32 werden trotzdem vom Treiber reserviert (IDF-Fehler, für uns ohne Folgen).
+- Die Coredump-Partition enthielt Altdaten („Incorrect size of core dump image“); einmalig gelöscht mit `esptool erase_region 0x12000 0x10000`.
+- pyserial öffnet den Port standardmäßig mit DTR/RTS aktiv und löst damit über USB-Serial/JTAG einen Reset aus; zum Mitlesen ohne Reset `dtr=False, rts=False` vor `open()` setzen.
+
+Besonderheiten gegenüber dem ursprünglichen Plan:
 
 - mbedTLS 4.1 (IDF 6.1): Schlüsselerzeugung und Hash/HMAC laufen über die PSA-API (`psa_generate_key`, `psa_hash_compute`, `psa_mac_*`), weil `ctr_drbg`, `md_hmac_*`, `pk_get_type/name` nicht mehr öffentlich sind.
 - Web-Assets werden wie bei Casambi_Logic per `tools/embed_web_assets.py` gzip-komprimiert in einen Header gebettet; PlatformIO kam mit `EMBED_TXTFILES` nicht zurecht.
 - Codes liegen als `codes.json` auf LittleFS (nicht in NVS): die NVS-Partition ist nur 24 KB, und das Format dient zugleich als Backup.
 - Statische IPv6-Adresse wird gesetzt, der Standard-Router kommt aber immer aus Router Advertisements (lwIP bietet keine API für statische IPv6-Gateways).
 - Stateless DHCPv6 ist konfiguriert (`CONFIG_LWIP_IPV6_DHCP6`), DNS über IPv6 kommt derzeit nur per RDNSS; der explizite `dhcp6_enable_stateless()`-Aufruf fehlt noch.
-- Erste Hardware-Tests sollten prüfen: RGMII-Delays des YT8531 (Link kommt, aber kein Verkehr = Delay falsch), Pinkonflikte mit dem ES8311-Codec, WS2812-Timing, Relaismodul-Polarität.
+- Noch zu prüfen auf Hardware: Ersteinrichtung/Login im Browser, Keypad-Lernmodus, Relaismodul-Polarität, OTA-Upload mit signiertem/unsigniertem Image, 2FA mit Authenticator-App (braucht NTP), WS2812-Farben, Pinkonflikte mit dem ES8311-Codec.
 
 Grobe Einschätzung: Phase 0–1 sind wegen des neuen Chips das größte Risiko (Pinkonflikte, PHY-Tuning, Toolchain). Phasen 2–5 sind Standard-ESP-IDF-Arbeit.
 
@@ -229,7 +237,7 @@ Grobe Einschätzung: Phase 0–1 sind wegen des neuen Chips das größte Risiko 
 5. **Wi-Fi als Fallback** gewünscht?
 6. **Zusätzliche Auslöser:** API-Token für Hausautomation/Home Assistant? Mehrere Türen/Relais?
 7. **Schaltplan des CoreBoards** vorhanden? Ohne ihn bleiben die Pins für Keypad/Relais vorläufig.
-8. Soll ich mit Phase 0 starten (Toolchain einrichten und Build auf dem Board verifizieren), sobald das Board am Rechner hängt?
+8. ~~Soll ich mit Phase 0 starten~~ **Erledigt (24.10.2026), Board läuft.**
 
 ---
 
