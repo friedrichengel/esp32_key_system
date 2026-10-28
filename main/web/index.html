@@ -318,8 +318,8 @@
         <label>Baudrate <select name="baud"><option>1200</option><option>2400</option><option>4800</option><option>9600</option><option>19200</option><option>38400</option><option>57600</option><option>115200</option></select></label>
         <label>Parität <select name="parity"><option value="0">keine (8N1)</option><option value="1">gerade (8E1)</option><option value="2">ungerade (8O1)</option></select></label>
         <label>Rahmenerkennung <select name="frame_mode"><option value="0">Abschlusszeichen</option><option value="1">Feste Länge</option><option value="2">Pause (Timeout)</option></select></label>
-        <label>Abschlusszeichen <select name="terminator"><option value="#">#</option><option value="*">*</option><option value="CR">CR</option><option value="LF">LF</option><option value="none">keins</option></select></label>
-        <label>Löschtaste <select name="clear_key"><option value="*">*</option><option value="#">#</option><option value="none">keine</option></select></label>
+        <label>Abschlusszeichen <select name="terminator"><option value="CR">CR (Haken, 0x0D)</option><option value="LF">LF</option><option value="#">#</option><option value="*">*</option><option value="none">keins</option></select></label>
+        <label>Löschtaste <select name="clear_key"><option value="BS">BS (X, 0x08)</option><option value="*">*</option><option value="#">#</option><option value="none">keine</option></select></label>
         <label>Feste Länge <input name="fixed_len" type="number" min="4" max="12"></label>
         <label>Timeout (ms) <input name="timeout_ms" type="number" min="200" max="10000" step="100"></label>
         <label><input type="checkbox" name="learn_mode"> Lernmodus (Rohdaten anzeigen)</label>

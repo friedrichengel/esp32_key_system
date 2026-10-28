@@ -51,6 +51,10 @@ GPIO42 ◄── Reed-Kontakt Tür 1 (gegen GND, interner Pull-up)
 GPIO39 ◄── Austaster innen Tür 1 (gegen GND, interner Pull-up)
 ```
 
+Keypad im Test (28.10.2026): 9600 8N1, Ziffern als ASCII, Haken-Taste sendet 0x0D (Abschluss), X-Taste 0x08 (Löschen). Das sind die Werksdefaults der Firmware.
+
+Kontakt und Austaster können galvanisch getrennt über ein 4-Kanal-PC817-Modul (HY-M154, je Kanal IN/G auf der Eingangs- und V/G auf der Ausgangsseite, 3 kΩ vor der LED und 3 kΩ am Kollektor) angeschlossen werden: 12 V Plus über den Reed-Kontakt an IN1, 12 V Minus an das G daneben; V1 an GPIO42, das G der Ausgangsseite an J2-GND. Austaster gleich über Kanal 2 an GPIO39. Der Jumper, der Eingangs- und Ausgangs-G verbindet, bleibt gezogen. Mit 3 kΩ sind 12–24 V am Eingang zulässig, der Ausgang zieht den GPIO über den internen Pull-up auf etwa 0,4 V. Keine Firmware-Einstellung nötig.
+
 Weitere Türen (ab Werk deaktiviert, Pins bleiben dann unberührt; Zuordnung in `config.h`):
 
 | Tür | Relais | Türkontakt | Austaster (REX) |

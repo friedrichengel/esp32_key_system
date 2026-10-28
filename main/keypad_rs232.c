@@ -100,7 +100,9 @@ static void emit(char *buf, size_t *len)
         buf[*len] = '\0';
         if (s_cb) s_cb(buf);
     } else if (*len > 0) {
-        ESP_LOGD(TAG, "Eingabe zu kurz (%u), verworfen", (unsigned)*len);
+        event_log(EV_DENIED, "Eingabe zu kurz (%u Zeichen, mindestens %d), verworfen", (unsigned)*len, CFG_CODE_MIN_LEN);
+    } else {
+        event_log(EV_DENIED, "Abschlusstaste ohne Eingabe");
     }
     *len = 0;
 }
@@ -146,6 +148,7 @@ static void keypad_task(void *arg)
         for (int i = 0; i < n; i++) {
             char c = (char)rx[i];
             if (k->clear_key && c == k->clear_key) {
+                event_log(EV_SYSTEM, "Keypad: Eingabe mit Loeschtaste verworfen (%u Zeichen)", (unsigned)len);
                 len = 0;
                 continue;
             }
@@ -193,6 +196,10 @@ esp_err_t keypad_start(keypad_code_cb_t cb)
     ESP_ERROR_CHECK_WITHOUT_ABORT(uart_param_config(CFG_KEYPAD_UART_NUM, &cfg));
     ESP_ERROR_CHECK_WITHOUT_ABORT(uart_set_pin(CFG_KEYPAD_UART_NUM, CFG_KEYPAD_TX_GPIO, CFG_KEYPAD_RX_GPIO,
                                                UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
+    /* Jedes Byte sofort an den Task liefern: Der RX-Timeout-Interrupt des S31 liefert ein einzelnes
+     * Byte sonst erst, wenn das naechste eintrifft (Lernmodus hing einen Tastendruck hinterher). */
+    ESP_ERROR_CHECK_WITHOUT_ABORT(uart_set_rx_full_threshold(CFG_KEYPAD_UART_NUM, 1));
+    ESP_ERROR_CHECK_WITHOUT_ABORT(uart_set_rx_timeout(CFG_KEYPAD_UART_NUM, 2));
     xTaskCreate(keypad_task, "keypad", 4096, NULL, 6, NULL);
     ESP_LOGI(TAG, "Keypad an UART%d: RX GPIO%d, TX GPIO%d, %" PRIu32 " Bd", CFG_KEYPAD_UART_NUM,
              CFG_KEYPAD_RX_GPIO, CFG_KEYPAD_TX_GPIO, g_settings.keypad.baud);

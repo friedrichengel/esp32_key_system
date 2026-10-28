@@ -50,8 +50,8 @@ void settings_set_defaults(settings_t *s)
     s->keypad.baud = CFG_KEYPAD_BAUD_DEFAULT;
     s->keypad.parity = 0;
     s->keypad.frame_mode = KEYPAD_FRAME_TERMINATOR;
-    s->keypad.terminator = '#';
-    s->keypad.clear_key = '*';
+    s->keypad.terminator = '\r';            /* Haken-Taste des Keypads sendet 0x0D */
+    s->keypad.clear_key = '\b';             /* X-Taste sendet 0x08                 */
     s->keypad.fixed_len = 6;
     s->keypad.timeout_ms = CFG_KEYPAD_TIMEOUT_MS;
     s->keypad.learn_mode = false;

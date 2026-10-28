@@ -120,6 +120,7 @@
     try { await loaders[view](); } catch (e) { toast(e.message, 'bad'); }
     if (view === 'dashboard') refreshTimer = setInterval(() => loadDashboard().catch(() => {}), 5000);
     if (view === 'system') refreshTimer = setInterval(() => loadLearn().catch(() => {}), 2000);
+    if (view === 'log') refreshTimer = setInterval(() => loadLog().catch(() => {}), 3000);
   }
 
   /* ---------- Übersicht ---------- */
@@ -274,9 +275,12 @@
   });
 
   /* ---------- Protokoll ---------- */
-  let logCache = [];
+  let logCache = [], logKey = '';
   async function loadLog() {
     const l = await api('/api/log?max=200');
+    const key = JSON.stringify(l.entries);
+    if (key === logKey) return;              /* nichts Neues: Tabelle nicht neu zeichnen */
+    logKey = key;
     logCache = l.entries;
     renderLog();
   }

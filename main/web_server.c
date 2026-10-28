@@ -389,7 +389,12 @@ static const char *ctrl_char_name(char c, char *buf)
 {
     if (c == '\r') return "CR";
     if (c == '\n') return "LF";
+    if (c == '\b') return "BS";
     if (c == 0) return "none";
+    if ((unsigned char)c < 0x20 || (unsigned char)c >= 0x7F) {
+        snprintf(buf, 5, "0x%02X", (unsigned char)c);   /* sonstige Steuerzeichen als Hex */
+        return buf;
+    }
     buf[0] = c; buf[1] = 0;
     return buf;
 }
@@ -399,13 +404,17 @@ static char parse_ctrl_char(const char *s, char dflt)
     if (!s) return dflt;
     if (strcmp(s, "CR") == 0 || strcmp(s, "\\r") == 0) return '\r';
     if (strcmp(s, "LF") == 0 || strcmp(s, "\\n") == 0) return '\n';
+    if (strcmp(s, "BS") == 0 || strcmp(s, "\\b") == 0) return '\b';
     if (strcmp(s, "none") == 0 || !*s) return 0;
+    if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X') && s[2]) {
+        return (char)strtoul(s + 2, NULL, 16);           /* z. B. "0x08" */
+    }
     return s[0];
 }
 
 static cJSON *keypad_to_json(const settings_keypad_t *k)
 {
-    char t[2], c[2];
+    char t[5], c[5];
     cJSON *o = cJSON_CreateObject();
     cJSON_AddNumberToObject(o, "baud", k->baud);
     cJSON_AddNumberToObject(o, "parity", k->parity);

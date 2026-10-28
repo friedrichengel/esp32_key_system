@@ -84,7 +84,7 @@ curl -k -X POST https://keysystem.local/api/v1/doors/1/open \
 | Methode | Pfad | Beschreibung |
 |---|---|---|
 | GET/POST | `/api/network` | Hostname, IPv4 (dhcp/static), DNS, IPv6 (SLAAC, statisch), NTP, TZ → `reboot_required` |
-| GET/POST | `/api/system` | `{doors:[{door, enabled, name, relay_pulse_ms, relay_active_low, door_contact_enable, exit_button_enable, pins:{relay, contact, rex}}], max_doors, keypad:{baud, parity, frame_mode, terminator, clear_key, fixed_len, timeout_ms, learn_mode, door}, admin_user, pins}`; POST nimmt `doors` (Array, Teilmenge erlaubt) und/oder `keypad` |
+| GET/POST | `/api/system` | `{doors:[{door, enabled, name, relay_pulse_ms, relay_active_low, door_contact_enable, exit_button_enable, pins:{relay, contact, rex}}], max_doors, keypad:{baud, parity, frame_mode, terminator, clear_key, fixed_len, timeout_ms, learn_mode, door}, admin_user, pins}`; POST nimmt `doors` (Array, Teilmenge erlaubt) und/oder `keypad`. `terminator`/`clear_key`: ein Zeichen, `CR`, `LF`, `BS`, `none` oder Hex wie `0x08` |
 | POST | `/api/system/password` | `{user, old_password, new_password}`; alle Sessions enden |
 | POST | `/api/system/reboot` | Neustart nach 1,5 s |
 | POST | `/api/system/factory-reset` | Settings, Codes, Token, Zertifikat löschen, Neustart |
