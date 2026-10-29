@@ -429,6 +429,7 @@
         <td>${adm ? 'alle' : doorsText(u.doors)}</td>
         <td>${adm ? 'alle' + (u.twofa_enabled ? ', 2FA' : '') : userRights(u)}</td>
         <td>${u.codes_owned}${u.max_codes ? ' / ' + u.max_codes : ''}</td>
+        <td class="t">${esc(u.created_by || '?')}<br>${fmtUnix(u.created_at) || 'Zeit unbekannt'}</td>
         <td class="t">${fmtUnix(u.last_login) || 'nie'}</td>
         <td><span class="badge ${u.enabled ? (u.must_change_pw ? 'warn' : 'ok') : 'bad'}">${u.enabled ? (u.must_change_pw ? 'Startpasswort' : 'aktiv') : 'gesperrt'}</span></td>
         <td class="actions"><button class="secondary" data-act="edit">Bearbeiten</button>
@@ -436,7 +437,7 @@
           ${u.twofa_enabled ? '<button class="secondary" data-act="twofa">2FA zurücksetzen</button>' : ''}
           ${u.uid !== r.me ? '<button class="danger" data-act="del">Löschen</button>' : ''}</td>
       </tr>`;
-    }).join('') || '<tr><td colspan="9" class="hint">Noch keine Benutzer angelegt. Alle Codes gehören dem Admin.</td></tr>';
+    }).join('') || '<tr><td colspan="10" class="hint">Noch keine Benutzer angelegt. Alle Codes gehören dem Admin.</td></tr>';
   }
   function openUserEditor(u) {
     const f = $('#form-user');
