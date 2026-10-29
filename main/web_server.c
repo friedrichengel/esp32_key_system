@@ -1681,7 +1681,7 @@ esp_err_t web_server_start(void)
         cfg.transport_mode = HTTPD_SSL_TRANSPORT_SECURE;
         s_tls = true;
     } else {
-        /* Casambi: ohne verwendbares Zertifikat HTTP-only als Notfallmodus */
+        /* Ohne verwendbares Zertifikat HTTP-only als Notfallmodus */
         cfg.transport_mode = HTTPD_SSL_TRANSPORT_INSECURE;
         s_tls = false;
         event_log(EV_SYSTEM, "Kein Zertifikat, Webserver laeuft HTTP-only auf Port %d", CFG_HTTP_REDIRECT_PORT);

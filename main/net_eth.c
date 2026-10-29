@@ -31,7 +31,7 @@ static bool             s_fallback_active;
 static esp_timer_handle_t s_dhcp_timer;
 
 /* ------------------------------------------------------------------------
- * DHCP-Rückfall (wie check_dhcp_fallback() im Casambi-Gateway): Link da, DHCP aktiv,
+ * DHCP-Rückfall: Link da, DHCP aktiv,
  * nach CFG_DHCP_FALLBACK_TIMEOUT_S keine Adresse -> feste Adresse CFG_IPV4_FALLBACK_*.
  * Beim nächsten Link-up (Kabel neu gesteckt) wird DHCP erneut versucht.
  * ---------------------------------------------------------------------- */

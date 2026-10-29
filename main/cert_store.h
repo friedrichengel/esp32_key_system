@@ -1,5 +1,5 @@
 /*
- * cert_store.h – HTTPS-Zertifikat und Key wie bei Casambi_Gateway/Casambi_Logic
+ * cert_store.h – HTTPS-Zertifikat und Key auf der Datenpartition
  *
  * Dateien /storage/webserver_cert.pem und /storage/webserver_key.pem. Liegt kein
  * gültiges Paar vor, wird beim Boot ein gerätespezifisches, selbstsigniertes
@@ -26,7 +26,7 @@ typedef struct {
     size_t key_len;
 } cert_info_t;
 
-esp_err_t   cert_store_init(void);                 /* laden oder erzeugen (Casambi: ensure_persistent_cert) */
+esp_err_t   cert_store_init(void);                 /* laden oder erzeugen */
 bool        cert_store_available(void);
 const char *cert_store_cert_pem(size_t *len_incl_nul);
 const char *cert_store_key_pem(size_t *len_incl_nul);

@@ -15,7 +15,7 @@
 - PHY-Interrupt ETH_INTN an GPIO4 (J2-32, über R83 0 Ω), von der Firmware nicht genutzt. 32-kHz-Quarz-Footprint an GPIO0/GPIO1 (Y1 unbestückt)
 - PHY-Straps (Default-Bestückung): PHYAD = 0, RXDLY Pull-up (2 ns RX-Delay), TXDLY Pull-down, PLLOFF aus, CFG_LDO → 3,3-V-I/O
 - Zwei USB-C: J1 = nativer USB-Serial/JTAG (GPIO33/34, VID 303A:1001, so haben wir geflasht), J3 = CH9102X USB-UART an UART0 GPIO58/59 mit Auto-Program. USB-A ist ein Host-Port (TPS2051, 500 mA)
-- Schaltplan: [esp32-s31-function-coreboard-1-schematics.pdf](esp32-s31-function-coreboard-1-schematics.pdf) (Kopie im Repo, Original: https://dl.espressif.com/schematics/esp32-s31-function-coreboard-1-schematics.pdf)
+- Schaltplan (Espressif, V1.0): https://dl.espressif.com/schematics/esp32-s31-function-coreboard-1-schematics.pdf
 
 ## J2-Header (40-polig, laut Schaltplan V1.0 bestätigt)
 

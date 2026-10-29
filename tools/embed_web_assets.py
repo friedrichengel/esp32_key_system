@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-Erzeugt aus den Web-UI-Dateien einen C-Header mit gzip-komprimierten Byte-Arrays
-(wie tools/embed_web_assets.py bei Casambi_Logic).
+Erzeugt aus den Web-UI-Dateien einen C-Header mit gzip-komprimierten Byte-Arrays.
 
 Aufruf:  embed_web_assets.py <ziel.h> <datei1> [<datei2> ...]
 

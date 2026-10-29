@@ -1,7 +1,7 @@
 # Hauptkomponente. "main" hängt in ESP-IDF automatisch von allen Komponenten ab;
 # die Registry-Komponenten (mdns, littlefs, led_strip, cjson) kommen über idf_component.yml.
 
-# Web-UI als gzip-Byte-Arrays in web_assets_gen.h einbetten (Casambi-Verfahren).
+# Web-UI als gzip-Byte-Arrays in web_assets_gen.h einbetten.
 # Läuft bei jedem CMake-Configure; PlatformIO ruft das Skript zusätzlich als pre-Skript.
 set(WEB_FILES
     ${CMAKE_CURRENT_LIST_DIR}/web/index.html

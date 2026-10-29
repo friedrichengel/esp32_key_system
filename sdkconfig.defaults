@@ -68,7 +68,7 @@ CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
 CONFIG_HTTPD_MAX_URI_LEN=512
 CONFIG_HTTPD_WS_SUPPORT=y
 CONFIG_ESP_TLS_SERVER_SESSION_TICKETS=y
-# Selbstsigniertes Zertifikat zur Laufzeit erzeugen (wie Casambi_Logic network_webserver_cert.cpp):
+# Selbstsigniertes Zertifikat zur Laufzeit erzeugen:
 # X.509-Create/Write sind in IDF 6.1 per Default AUS und müssen explizit an.
 CONFIG_MBEDTLS_X509_CREATE_C=y
 CONFIG_MBEDTLS_X509_CRT_WRITE_C=y

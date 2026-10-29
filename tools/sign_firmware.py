@@ -13,7 +13,7 @@ Hardware-Secure-Boot (CONFIG_SECURE_BOOT) an. Dieses Skript holt das nach:
      Format) signiert und in-place ersetzt. Damit flasht "pio run -t upload" das signierte
      Image, und dieselbe Datei kann über die Firmware-Seite hochgeladen werden.
 
-Schlüsselsuche (Reihenfolge wie bei Casambi_Gateway/Casambi_Logic):
+Schlüsselsuche (Reihenfolge):
   1. Umgebungsvariable OTA_SIGNING_KEY (Pfad zu einer PEM-Datei)
   2. CONFIG_SECURE_BOOT_SIGNING_KEY aus sdkconfig.defaults (Default: keys/ota_signing_key.pem)
 

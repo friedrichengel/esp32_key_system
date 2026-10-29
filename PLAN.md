@@ -112,10 +112,10 @@ esp32_key_system/
 
 - `esp_https_server` (mbedTLS), TLS ≥ 1.2, 4 parallele TLS-Sockets (≈ 40 KB RAM je Socket → mbedTLS-Puffer in PSRAM: `CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC`).
 - Lauscht dual-stack (IPv6-Socket nimmt IPv4-mapped an); Port 443, dazu Port 80 nur als Redirect auf HTTPS.
-- **Zertifikat – gleiches Verfahren wie Casambi_Gateway / Casambi_Logic** (`network_webserver_cert.cpp`, Entscheidung 23.10.2026):
+- **Zertifikat – gleiches Verfahren wie im Vorgängerprojekt** (Entscheidung 23.10.2026):
   - Zwei Dateien `/webserver_cert.pem` und `/webserver_key.pem` auf der Datenpartition (hier LittleFS statt SPIFFS).
   - Beim Boot `ensure_persistent_cert()`: Liegt ein gültiges Paar vor (hochgeladen oder früher erzeugt), wird es verwendet. Sonst wird einmalig ein **gerätespezifisches, selbstsigniertes EC-P-256-Zertifikat** per mbedTLS erzeugt (CN = `<hostname>-<mac>`, O = „esp32_key_system“, feste Gültigkeit 2025–2045, Zufalls-Seriennummer, Subject-Key-Identifier, Task-WDT wird während der Erzeugung gefüttert). Schlägt die Erzeugung fehl, werden Halbfertig-Dateien gelöscht und der Server startet **HTTP-only** als Notfallmodus.
-  - Admin-Seite „Zertifikat“ wie das Casambi-Upload-Formular: getrennter Upload von **Zertifikat** (`.pem/.crt/.cer`) und **Key** (`.pem/.key`), Status-Badge je Datei („hochgeladen, n Byte“ / „gerätespezifisches Zertifikat wird beim Boot erzeugt“), Hinweis „Neustart nötig, Server hält das laufende Zertifikat im RAM“. Zusätzlich: Fingerprint anzeigen, Button „Zertifikat neu erzeugen“ (löscht beide Dateien, Reboot), Download des aktuellen Zertifikats zum Import in den Browser-Truststore.
+  - Admin-Seite „Zertifikat“: getrennter Upload von **Zertifikat** (`.pem/.crt/.cer`) und **Key** (`.pem/.key`), Status-Badge je Datei („hochgeladen, n Byte“ / „gerätespezifisches Zertifikat wird beim Boot erzeugt“), Hinweis „Neustart nötig, Server hält das laufende Zertifikat im RAM“. Zusätzlich: Fingerprint anzeigen, Button „Zertifikat neu erzeugen“ (löscht beide Dateien, Reboot), Download des aktuellen Zertifikats zum Import in den Browser-Truststore.
   - Upload-Validierung vor dem Speichern (PEM-Parse mit mbedTLS, Key passt zum Zertifikat), damit kein kaputtes Paar den HTTPS-Start blockiert.
   - Werksreset und Konfig-Export/Import: Zertifikat und Key werden gelöscht bzw. **nicht** exportiert (wie beim Gateway).
   - Kein ACME/Let's Encrypt im Gerät; wer ein CA-signiertes Zertifikat will, lädt es hoch.
@@ -141,7 +141,7 @@ esp32_key_system/
 - Ablauf im Gerät: Upload über HTTPS (POST `/api/firmware`, Chunks direkt in `esp_ota_write`) → Signaturprüfung → Boot-Partition umschalten → Neustart → neue App meldet sich nach erfolgreichem Netz-Start „gültig“ (`esp_ota_mark_app_valid_cancel_rollback`), sonst **automatischer Rollback** (`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`).
 - Zwei OTA-Slots à 4 MB. Konfiguration liegt in NVS und bleibt über Updates erhalten; Versionsmigration im `settings`-Modul.
 - **Entscheidung 23.10.2026: kein Hardware-Secure-Boot (eFuse) vorerst.** Es bleibt bei der reversiblen Signaturprüfung oben. Der Umstieg auf Secure Boot v2 + Flash-Verschlüsselung ist später ohne Umbau der Signaturkette möglich, weil derselbe RSA-3072-Schlüssel und derselbe Signaturblock weiterverwendet werden; es kommt nur das Brennen der eFuses dazu (irreversibel, JTAG gesperrt).
-- Build-Workflow wie bei Casambi_Gateway/Casambi_Logic: privater Schlüssel im Projektroot bzw. über Umgebungsvariable `OTA_SIGNING_KEY` (gitignored), CI signiert mit Secret, unsignierte Images werden immer abgelehnt. Unterschied: statt des eigenen `CSIG`-Trailers mit ECDSA-P-256 nutzen wir den ESP-IDF-eigenen Signaturblock, weil der S31 unter ESP-IDF läuft und `esp_ota_end()` die Prüfung mitbringt (weniger Eigencode, Rollback integriert). Ein separates Schlüsselpaar für dieses Projekt, nicht das der Casambi-Geräte.
+- Build-Workflow wie im Vorgängerprojekt: privater Schlüssel im Projektroot bzw. über Umgebungsvariable `OTA_SIGNING_KEY` (gitignored), CI signiert mit Secret, unsignierte Images werden immer abgelehnt. Unterschied: statt des eigenen `CSIG`-Trailers mit ECDSA-P-256 nutzen wir den ESP-IDF-eigenen Signaturblock, weil der S31 unter ESP-IDF läuft und `esp_ota_end()` die Prüfung mitbringt (weniger Eigencode, Rollback integriert). Ein separates Schlüsselpaar nur für dieses Projekt.
 
 ---
 
@@ -225,7 +225,7 @@ Speicherung: NVS-Namespace `codes`, bis ~200 Einträge, Codes im Klartext. Ehrli
 | 0 | Toolchain-Bring-up: IDF 6.1 installieren, Gerüst bauen, LED blinkt, Konsole, Partitionstabelle, PlatformIO-Fork testen | **Erledigt (24.10.2026)**: Flash über USB-Serial/JTAG (COM4), Boot sauber, PSRAM 16 MB erkannt, LittleFS gemountet |
 | 1 | Ethernet RGMII + YT8531-Workarounds, DHCP/SLAAC, SNTP, mDNS, Hostname | **Auf Hardware getestet (24.10.2026)**: Link 1000 Mbit/s, DHCP-IPv4, SLAAC (link-local + global), `ping keysystem.local` über IPv6 ok. Voraussetzung: RGMII-Sendetakt aus der **APLL** (`CONFIG_ETH_EMAC_RGMII_TX_CLK_SRC_APLL`), siehe Umsetzungsstand. SNTP im Testnetz nicht prüfbar (kein NTP, kein Internet) |
 | 2 | HTTPS-Server, selbstsigniertes Zert, Login/Session, UI-Grundgerüst, Übersicht | **Teilweise getestet (24.10.2026)**: HTTP→HTTPS-Redirect, TLS über IPv4 und IPv6, Zertifikat (EC, CN=keysystem-<MAC>, SAN keysystem.local), `/api/session` meldet `setup_required`, geschützte Routen liefern 401. Offen: Ersteinrichtung und Login im Browser |
-| 3 | Settings in NVS, Netzwerk-Seite (statisch v4/v6), Zertifikats-Upload, Backup/Restore, DHCP-Rückfall | **Code fertig, kompiliert**; DHCP-Rückfall auf 192.168.1.50/24 nach 20 s ohne Lease (wie Casambi `check_dhcp_fallback`), 192.168.1.50 ist auch die Vorgabe für „statisch“ |
+| 3 | Settings in NVS, Netzwerk-Seite (statisch v4/v6), Zertifikats-Upload, Backup/Restore, DHCP-Rückfall | **Code fertig, kompiliert**; DHCP-Rückfall auf 192.168.1.50/24 nach 20 s ohne Lease, 192.168.1.50 ist auch die Vorgabe für „statisch“ |
 | 4 | Keypad-UART + Lernmodus, Relais-Modul, Codes-DB + UI, Protokoll | **Keypad getestet (28.10.2026)**: Lernmodus zeigt Tasten sofort (RX-FIFO-Schwelle 1 Byte, S31-Timeout-Interrupt liefert Einzelbytes sonst verzögert), Haken = CR, X = BS, Protokoll aktualisiert sich alle 3 s und zeigt auch zu kurze/gelöschte Eingaben. Relais und Türkontakt offen |
 | 5 | Signierte OTA: Signierskripte, Upload, Verifikation, Rollback | **Code fertig, kompiliert**; Test: unsigniertes Image ablehnen, Stromausfall während Update |
 | 6 | Härtung + Tests: Rate-Limits, WDT, DST-Wechsel, IPv6-only-Netz, Zert-Rotation, Lasttest TLS, Doku | Rate-Limits, Werksreset per BOOT-Taster, Protokolldatei erledigt; Tests warten auf Hardware |
@@ -246,7 +246,7 @@ Alle Module aus Abschnitt 2 sowie Phase 8 (mehrere Türen, API-Token, Abschnitt 
 Besonderheiten gegenüber dem ursprünglichen Plan:
 
 - mbedTLS 4.1 (IDF 6.1): Schlüsselerzeugung und Hash/HMAC laufen über die PSA-API (`psa_generate_key`, `psa_hash_compute`, `psa_mac_*`), weil `ctr_drbg`, `md_hmac_*`, `pk_get_type/name` nicht mehr öffentlich sind.
-- Web-Assets werden wie bei Casambi_Logic per `tools/embed_web_assets.py` gzip-komprimiert in einen Header gebettet; PlatformIO kam mit `EMBED_TXTFILES` nicht zurecht.
+- Web-Assets werden per `tools/embed_web_assets.py` gzip-komprimiert in einen Header gebettet; PlatformIO kam mit `EMBED_TXTFILES` nicht zurecht.
 - Codes liegen als `codes.json` auf LittleFS (nicht in NVS): die NVS-Partition ist nur 24 KB, und das Format dient zugleich als Backup.
 - Statische IPv6-Adresse wird gesetzt, der Standard-Router kommt aber immer aus Router Advertisements (lwIP bietet keine API für statische IPv6-Gateways).
 - Stateless DHCPv6 ist konfiguriert (`CONFIG_LWIP_IPV6_DHCP6`), DNS über IPv6 kommt derzeit nur per RDNSS; der explizite `dhcp6_enable_stateless()`-Aufruf fehlt noch.
@@ -261,7 +261,7 @@ Grobe Einschätzung: Phase 0–1 sind wegen des neuen Chips das größte Risiko 
 1. **Keypad-Modell/Protokoll:** Welches Keypad genau? (Datenblatt spart den Umweg über den Lernmodus.) Soll der TX-Kanal zum Keypad genutzt werden (Beep/LED-Quittung)?
 2. **Relais/Türöffner:** Spannung/Strom des Türöffners, vorhandenes Relaismodul (Active-Low?), Fail-safe- oder Fail-secure-Öffner?
 3. ~~Secure Boot per eFuse~~ **Entschieden (23.10.2026): vorerst nicht, eventuell später.** Signierte Updates ohne eFuse (Abschnitt 5).
-4. ~~Zertifikatsquelle~~ **Entschieden (23.10.2026): wie Casambi_Gateway / Casambi_Logic** – gerätespezifisch selbstsigniert beim ersten Boot, Upload von Zertifikat + Key über die Admin-Seite (Abschnitt 4).
+4. ~~Zertifikatsquelle~~ **Entschieden (23.10.2026): wie im Vorgängerprojekt** – gerätespezifisch selbstsigniert beim ersten Boot, Upload von Zertifikat + Key über die Admin-Seite (Abschnitt 4).
 5. ~~Wi-Fi als Fallback~~ **Entschieden (24.10.2026): nein**, nur Ethernet.
 6. ~~Zusätzliche Auslöser?~~ **Entschieden (24.10.2026): ja, beides kommt rein** – API-Token für Hausautomation und mehrere Türen/Relais, Entwurf in Abschnitt 8a, Phase 8. Ein Keypad pro Gerät, bis zu 4 Türen (entschieden 24.10.2026). **Umgesetzt (Phase 8, `api_tokens.c`, `door_relay.c`, Settings v3), per API gegen das Board getestet.**
 7. ~~Schaltplan des CoreBoards vorhanden?~~ **Erledigt (24.10.2026):** Schaltplan liegt vor (Quellen), Pins geprüft, keine Konflikte.
@@ -272,7 +272,7 @@ Grobe Einschätzung: Phase 0–1 sind wegen des neuen Chips das größte Risiko 
 ## 12. Quellen
 
 - Board-User-Guide: https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32s31/esp32-s31-function-coreboard-1/user_guide.html
-- Board-Schaltplan (V1.0, 13.05.2026): [docs/esp32-s31-function-coreboard-1-schematics.pdf](docs/esp32-s31-function-coreboard-1-schematics.pdf), Original https://dl.espressif.com/schematics/esp32-s31-function-coreboard-1-schematics.pdf
+- Board-Schaltplan (V1.0, 13.05.2026): https://dl.espressif.com/schematics/esp32-s31-function-coreboard-1-schematics.pdf (Espressif, nicht im Repo enthalten)
 - ESP-IDF Ethernet-Beispiel (YT8531-Init): https://github.com/espressif/esp-idf/blob/master/examples/ethernet/basic/
 - ESP32-S31 EMAC-Pins: `components/esp_hal_emac/esp32s31/emac_periph.c` (ESP-IDF master)
 - ESPHome-PR mit S31-RGMII-Pins: https://github.com/esphome/esphome/pull/17277

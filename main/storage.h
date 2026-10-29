@@ -1,7 +1,7 @@
 /*
  * storage.h – LittleFS-Datenpartition ("storage", gemountet unter /storage)
  *
- * Enthält wie bei Casambi_Gateway/_Logic das HTTPS-Zertifikat samt Key sowie das
+ * Enthält das HTTPS-Zertifikat samt Key sowie das
  * persistente Ereignisprotokoll. Wird beim ersten Start formatiert.
  */
 #pragma once

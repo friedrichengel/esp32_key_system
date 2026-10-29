@@ -2,7 +2,7 @@
 
 Zutrittssystem auf dem **ESP32-S31-Function-CoreBoard-1**: Keypad (RS232) → Code-Prüfung mit Dauer-/Zeit-/Einmalcodes → Relais öffnet die Tür. Verwaltung per HTTPS-Webseite (IPv4/IPv6), signierte Firmware-Updates, gerätespezifisches TLS-Zertifikat mit Upload-Möglichkeit.
 
-**Status (24.10.2026):** Phasen 0–5 aus [PLAN.md](PLAN.md) implementiert und mit ESP-IDF 6.1 fehlerfrei gebaut. Noch nicht auf Hardware getestet. Pins sind Vorschläge und liegen gesammelt in [main/config.h](main/config.h).
+**Status (28.10.2026):** Alle Phasen aus [PLAN.md](PLAN.md) implementiert und mit ESP-IDF 6.1 gebaut. Auf dem Board getestet: Boot, Ethernet (1 Gbit/s, DHCP, SLAAC), HTTPS über IPv4/IPv6, mDNS und Keypad-Empfang. Noch ungetestet: Relais, Türkontakt/REX, OTA, 2FA. Pins liegen gesammelt in [main/config.h](main/config.h) (siehe [docs/hardware.md](docs/hardware.md)).
 
 ## Bauen
 
@@ -51,3 +51,7 @@ Werksreset ohne Web-Zugang: BOOT-Taster 10 s halten (LED blinkt ab 2 s rot).
 | `tools/` | Web-Assets einbetten, Signaturschlüssel erzeugen, Firmware signieren |
 | `docs/hardware.md` | Pinbelegung, J2-Header, externe Beschaltung |
 | `docs/api.md` | REST-API |
+
+## Lizenz
+
+MIT, siehe [LICENSE](LICENSE). Enthaltene Fremdkomponenten: `main/web/qrcode.js` (MIT, Kazuhiko Arase); die YT8531-Initialisierung in `main/net_eth.c` orientiert sich am ESP-IDF-Ethernet-Beispiel (Apache-2.0, Espressif). ESP-IDF und die Komponenten aus der ESP Component Registry (mdns, littlefs, led_strip, cJSON) werden beim Build geladen und bleiben unter ihren eigenen Lizenzen.

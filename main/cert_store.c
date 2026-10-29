@@ -26,7 +26,7 @@ static char  *s_key_pem;
 static size_t s_key_len;
 static bool   s_generated_this_boot;
 
-/* Casambi: Zertifikatserzeugung dauert Sekunden, Watchdog zwischendurch füttern. */
+/* Zertifikatserzeugung dauert Sekunden, Watchdog zwischendurch füttern. */
 static inline void wdt_feed_safe(void)
 {
     if (esp_task_wdt_status(NULL) == ESP_OK) {

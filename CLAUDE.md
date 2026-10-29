@@ -4,7 +4,7 @@
 
 Zutrittssystem auf dem **ESP32-S31-Function-CoreBoard-1** (Espressif, ESP32-S31, 16 MB Flash, 16 MB Octal-PSRAM, Gigabit-Ethernet über YT8531-PHY/RGMII). Ein Keypad mit RS232-Ausgang liefert Codes, die Firmware prüft sie gegen Dauer-, Zeit- und Einmalcodes und schaltet ein Relais für den Türöffner. Verwaltung über eine HTTPS-Webseite (IPv4 + IPv6), Firmware-Updates nur signiert. Plan und Entscheidungen: [PLAN.md](PLAN.md).
 
-Mechanismen (Zertifikate, OTA-Signierung, Login/Session, Web-UI-Einbettung) folgen bewusst den Projekten Casambi_Gateway / Casambi_Logic, nur portiert von Arduino auf ESP-IDF.
+Mechanismen (Zertifikate, OTA-Signierung, Login/Session, Web-UI-Einbettung) folgen bewusst einem bewährten Vorgängerprojekt, nur portiert von Arduino auf ESP-IDF.
 
 ## Build-System
 
@@ -62,7 +62,7 @@ main/
 ├── ota_update.[ch]     esp_ota_* mit Signaturprüfung, Rollback, Info
 └── web/                index.html, app.js, style.css (Vanilla, deutsch), qrcode.js (vendored, MIT, Kazuhiko Arase)
 tools/                  embed_web_assets.py, pio_pre_build.py, sign_firmware.py, gen_signing_key.sh, sign_firmware.sh
-docs/                   hardware.md (Pins, J2-Header), api.md (REST-API), Board-Schaltplan (PDF)
+docs/                   hardware.md (Pins, J2-Header), api.md (REST-API)
 keys/                   nur .gitkeep; private Schlüssel lokal
 ```
 

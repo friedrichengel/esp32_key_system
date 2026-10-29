@@ -95,7 +95,7 @@
 #define CFG_TZ_DEFAULT            "CET-1CEST,M3.5.0,M10.5.0/3"
 
 /* ========================================================================
- * Dateisystem (LittleFS-Partition "storage") – Pfade wie bei Casambi_Gateway/_Logic
+ * Dateisystem (LittleFS-Partition "storage")
  * ====================================================================== */
 #define CFG_FS_BASE_PATH          "/storage"
 #define CFG_FS_PARTITION_LABEL    "storage"
