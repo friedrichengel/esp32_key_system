@@ -39,6 +39,7 @@
     const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
     return (d ? d + 'd ' : '') + h + 'h ' + m + 'm';
   }
+  function fmtSecs(s) { return s >= 60 ? Math.floor(s / 60) + ':' + pad(s % 60) + ' min' : s + ' s'; }
   function pad(n) { return String(n).padStart(2, '0'); }
   function unixToLocalInput(t) {
     if (!t) return '';
@@ -51,7 +52,7 @@
 
   function formData(form) {
     const o = {};
-    $$('input,select', form).forEach(i => {
+    $$('input,select,textarea', form).forEach(i => {
       if (!i.name) return;
       if (i.type === 'checkbox') o[i.name] = i.checked;
       else if (i.type === 'radio') { if (i.checked) o[i.name] = i.value; }
@@ -61,7 +62,7 @@
     return o;
   }
   function fillForm(form, data) {
-    $$('input,select', form).forEach(i => {
+    $$('input,select,textarea', form).forEach(i => {
       if (!i.name || !(i.name in data)) return;
       const v = data[i.name];
       if (i.type === 'checkbox') i.checked = !!v;
@@ -69,6 +70,10 @@
       else i.value = v == null ? '' : v;
     });
   }
+  const isAdmin = () => session.role === 'admin';
+  const TYPE_NAMES = { permanent: 'Dauercode', timed: 'Zeitcode', onetime: 'Einmalcode' };
+  const TYPE_ORDER = ['permanent', 'timed', 'onetime'];
+  const typeAllowed = (t) => isAdmin() || !!(session.code_types & (1 << TYPE_ORDER.indexOf(t)));
 
   /* ---------- Türen (Hilfen) ---------- */
   let doorsBrief = [];            /* [{door, name, enabled}] vom letzten Laden */
@@ -81,15 +86,30 @@
     if (en.length && en.every(d => mask & (1 << (d.door - 1))) && sel.length === en.length) return 'alle';
     return sel.map(d => esc(d.name) + (d.enabled ? '' : ' (aus)')).join(', ') || '<span class="bad">keine</span>';
   }
-  function renderDoorChecks(container, mask, doors) {
-    doors = doors || doorsBrief;
+  function renderDoorChecks(container, mask, doors, allowedMask) {
+    doors = (doors || doorsBrief).filter(d => allowedMask == null || (allowedMask & (1 << (d.door - 1))));
     container.innerHTML = doors.map(d =>
-      `<label><input type="checkbox" data-door="${d.door}" ${mask & (1 << (d.door - 1)) ? 'checked' : ''}> ${esc(d.name)}${d.enabled ? '' : ' <span class="hint">(deaktiviert)</span>'}</label>`).join('');
+      `<label><input type="checkbox" data-door="${d.door}" ${mask & (1 << (d.door - 1)) ? 'checked' : ''}> ${esc(d.name)}${d.enabled ? '' : ' <span class="hint">(deaktiviert)</span>'}</label>`).join('')
+      || '<span class="hint">Keine Tür freigegeben.</span>';
   }
   function readDoorChecks(container) {
     let m = 0;
     $$('input[data-door]', container).forEach(i => { if (i.checked) m |= 1 << (Number(i.dataset.door) - 1); });
     return m;
+  }
+
+  /* ---------- Anlagen-/Betreuerinfo auf der Loginseite ---------- */
+  function renderSite(site) {
+    const box = $('#site-box');
+    if (!site || (!site.name && !site.support_email && !site.info_text)) { box.classList.add('hidden'); return; }
+    $('#site-name').textContent = site.name || '';
+    $('#site-name').classList.toggle('hidden', !site.name);
+    $('#site-text').textContent = site.info_text || '';          /* textContent: kein HTML */
+    $('#site-text').classList.toggle('hidden', !site.info_text);
+    $('#site-mail').textContent = site.support_email || '';
+    $('#site-mail').href = site.support_email ? 'mailto:' + encodeURIComponent(site.support_email).replace(/%40/g, '@') : '#';
+    $('#site-mail-row').classList.toggle('hidden', !site.support_email);
+    box.classList.remove('hidden');
   }
 
   /* ---------- Routing ---------- */
@@ -99,31 +119,46 @@
     $$('#nav a').forEach(a => a.classList.toggle('active', a.getAttribute('href') === '#' + id));
   }
 
+  const ADMIN_VIEWS = ['log', 'users', 'api', 'network', 'cert', 'firmware', 'system'];
   async function route() {
     clearInterval(refreshTimer);
     if (!session.authenticated) {
       try { session = await api('/api/session'); } catch (e) { toast('Gerät nicht erreichbar: ' + e.message, 'bad'); return; }
     }
-    $('#hd-host').textContent = session.hostname ? session.hostname : 'Key System';
+    document.title = session.site && session.site.name ? session.site.name + ' – Key System' : 'Key System';
+    $('#hd-host').textContent = session.site && session.site.name ? session.site.name : (session.hostname || 'Key System');
     $('#tls-warn').classList.toggle('hidden', !!session.tls);
     if (!session.authenticated) {
       $('#nav').classList.add('hidden');
+      $('#hd-user').textContent = '';
       show(session.setup_required ? 'setup' : 'login');
+      renderSite(session.site);
       if (!session.setup_required) showLoginStep(!!twofaTicket);
       return;
     }
+    $('#site-box').classList.add('hidden');
+    $('#hd-user').textContent = session.user ? `· ${session.user}${isAdmin() ? ' (Admin)' : ''}` : '';
+    if (session.must_change_pw) {
+      $('#nav').classList.add('hidden');
+      show('pwchange');
+      return;
+    }
+    $$('[data-admin]').forEach(el => el.classList.toggle('hidden', !isAdmin()));
     $('#nav').classList.remove('hidden');
-    const view = (location.hash || '#dashboard').slice(1);
-    const loaders = { dashboard: loadDashboard, codes: loadCodes, log: loadLog, api: loadTokens, network: loadNetwork, cert: loadCert, firmware: loadFirmware, system: loadSystem };
-    if (!loaders[view]) { location.hash = '#dashboard'; return; }
+    let view = (location.hash || '#dashboard').slice(1);
+    const loaders = { dashboard: loadDashboard, codes: loadCodes, log: loadLog, users: loadUsers, api: loadTokens, network: loadNetwork,
+                      cert: loadCert, firmware: loadFirmware, system: loadSystem, account: loadAccount };
+    if (!loaders[view] || (!isAdmin() && ADMIN_VIEWS.includes(view))) { location.hash = '#dashboard'; return; }
     show(view);
     try { await loaders[view](); } catch (e) { toast(e.message, 'bad'); }
     if (view === 'dashboard') refreshTimer = setInterval(() => loadDashboard().catch(() => {}), 5000);
     if (view === 'system') refreshTimer = setInterval(() => loadLearn().catch(() => {}), 2000);
     if (view === 'log') refreshTimer = setInterval(() => loadLog().catch(() => {}), 3000);
+    if (view === 'codes') refreshTimer = setInterval(() => { if (graceRunning) loadCodes(true).catch(() => {}); }, 5000);
   }
 
   /* ---------- Übersicht ---------- */
+  function canOpen(door) { return isAdmin() || (session.perms && session.perms.open_doors && (session.doors & (1 << (door - 1)))); }
   async function loadDashboard() {
     const s = await api('/api/status');
     doorsBrief = s.doors.map(d => ({ door: d.door, name: d.name, enabled: d.enabled }));
@@ -136,38 +171,48 @@
           <div class="k">Türkontakt</div><div class="v ${d.contact_enabled && !d.contact_closed ? 'warn' : ''}">${d.contact_enabled ? (d.contact_closed ? 'geschlossen' : 'offen') : 'nicht konfiguriert'}</div>
           <div class="k">Letzte Öffnung</div><div class="v">${d.last_open_uptime_s ? 'vor ' + fmtUptime(s.system.uptime_s - d.last_open_uptime_s) : 'seit Start keine'}</div>
         </div>
-        <button data-act="open">${esc(d.name)} öffnen</button>
+        ${canOpen(d.door) ? `<button data-act="open">${esc(d.name)} öffnen</button>` : ''}
       </div>`).join('') || '<p class="hint">Keine Tür aktiv (System → Türen und Relais).</p>';
     const k = s.keypad;
-    kv($('#dash-keypad'), [
+    const kpRows = [
       ['Zugeordnete Tür', esc(doorName(doorsBrief, k.door)), doorsBrief.find(d => d.door === k.door && d.enabled) ? '' : 'warn'],
-      ['Status', k.locked ? `gesperrt (${k.lock_remaining_s} s)` : (k.fail_count ? `bereit, ${k.fail_count} Fehlversuch(e)` : 'bereit'), k.locked ? 'bad' : 'ok'],
-      ['Daten', k.rx_count ? `${k.rx_count} Byte, zuletzt vor ${fmtUptime(s.system.uptime_s - k.last_rx_uptime_s)}` : 'noch nichts empfangen', k.rx_count ? '' : 'warn'],
-      ['Lernmodus', k.learn_mode ? 'aktiv' : 'aus', k.learn_mode ? 'warn' : ''],
-      ['Codes', s.codes_count],
-      ['API-Token', s.tokens_count]
-    ]);
-    kv($('#dash-net'), [
-      ['Link', s.network.link ? `${s.network.speed} Mbit/s ${s.network.full_duplex ? 'Vollduplex' : 'Halbduplex'}` : 'kein Link', s.network.link ? 'ok' : 'bad'],
-      ['Hostname', s.network.hostname + '.local'],
-      ['IPv4', s.network.has_ip4 ? `${s.network.ip4} / ${s.network.mask4}` + (s.network.ip4_fallback ? ' (Rückfall, kein DHCP)' : s.network.ip4_mode === 'static' ? ' (statisch)' : ' (DHCP)') : 'keine', s.network.has_ip4 ? (s.network.ip4_fallback ? 'warn' : '') : 'warn'],
-      ['Gateway', s.network.gw4],
-      ['DNS', [s.network.dns1, s.network.dns2].filter(x => x && x !== '0.0.0.0').join(', ')],
-      ['IPv6', s.network.ip6.join('<br>')],
-      ['MAC', s.network.mac]
-    ]);
-    kv($('#dash-sys'), [
+      ['Status', k.locked ? `gesperrt (${k.lock_remaining_s} s)` : (k.fail_count ? `bereit, ${k.fail_count} Fehlversuch(e)` : 'bereit'), k.locked ? 'bad' : 'ok']
+    ];
+    if (s.admin) {
+      kpRows.push(['Daten', k.rx_count ? `${k.rx_count} Byte, zuletzt vor ${fmtUptime(s.system.uptime_s - k.last_rx_uptime_s)}` : 'noch nichts empfangen', k.rx_count ? '' : 'warn']);
+      kpRows.push(['Lernmodus', k.learn_mode ? 'aktiv' : 'aus', k.learn_mode ? 'warn' : '']);
+      kpRows.push(['Codes', s.codes_count], ['Benutzer', s.users_count], ['API-Token', s.tokens_count]);
+    } else {
+      kpRows.push(['Meine Codes', s.codes_count]);
+    }
+    kv($('#dash-keypad'), kpRows);
+    const sysRows = [
       ['Zeit', s.system.time + (s.system.time_valid ? '' : ' (nicht synchron)'), s.system.time_valid ? '' : 'warn'],
       ['Laufzeit', fmtUptime(s.system.uptime_s)],
-      ['Firmware', `${s.firmware.version} (${s.firmware.partition})`],
-      ['Heap frei', Math.round(s.system.heap_free / 1024) + ' KB (min ' + Math.round(s.system.heap_min / 1024) + ' KB)'],
-      ['PSRAM frei', Math.round(s.system.psram_free / 1024) + ' KB'],
-      ['Dateisystem', Math.round(s.system.fs_used / 1024) + ' / ' + Math.round(s.system.fs_total / 1024) + ' KB'],
+      ['Firmware', s.firmware.version + (s.firmware.partition ? ` (${s.firmware.partition})` : '')],
       ['Verbindung', s.system.tls ? 'HTTPS' : 'HTTP (unverschlüsselt!)', s.system.tls ? 'ok' : 'bad']
-    ]);
-    const l = await api('/api/log?max=8');
-    $('#dash-log tbody').innerHTML = l.entries.map(e =>
-      `<tr><td class="t">${fmtTs(e)}</td><td><span class="cat ${e.cat}">${e.cat}</span></td><td>${esc(e.msg)}</td></tr>`).join('');
+    ];
+    if (s.admin) {
+      sysRows.splice(3, 0,
+        ['Heap frei', Math.round(s.system.heap_free / 1024) + ' KB (min ' + Math.round(s.system.heap_min / 1024) + ' KB)'],
+        ['PSRAM frei', Math.round(s.system.psram_free / 1024) + ' KB'],
+        ['Dateisystem', Math.round(s.system.fs_used / 1024) + ' / ' + Math.round(s.system.fs_total / 1024) + ' KB']);
+      kv($('#dash-net'), [
+        ['Link', s.network.link ? `${s.network.speed} Mbit/s ${s.network.full_duplex ? 'Vollduplex' : 'Halbduplex'}` : 'kein Link', s.network.link ? 'ok' : 'bad'],
+        ['Hostname', s.network.hostname + '.local'],
+        ['IPv4', s.network.has_ip4 ? `${s.network.ip4} / ${s.network.mask4}` + (s.network.ip4_fallback ? ' (Rückfall, kein DHCP)' : s.network.ip4_mode === 'static' ? ' (statisch)' : ' (DHCP)') : 'keine', s.network.has_ip4 ? (s.network.ip4_fallback ? 'warn' : '') : 'warn'],
+        ['Gateway', s.network.gw4],
+        ['DNS', [s.network.dns1, s.network.dns2].filter(x => x && x !== '0.0.0.0').join(', ')],
+        ['IPv6', s.network.ip6.join('<br>')],
+        ['MAC', s.network.mac]
+      ]);
+    }
+    kv($('#dash-sys'), sysRows);
+    if (s.admin) {
+      const l = await api('/api/log?max=8');
+      $('#dash-log tbody').innerHTML = l.entries.map(e =>
+        `<tr><td class="t">${fmtTs(e)}</td><td><span class="cat ${e.cat}">${e.cat}</span></td><td>${esc(e.msg)}</td></tr>`).join('');
+    }
   }
   $('#dash-doors').addEventListener('click', async (ev) => {
     const btn = ev.target.closest('button[data-act=open]');
@@ -180,10 +225,13 @@
   });
 
   /* ---------- Codes ---------- */
-  const TYPE_NAMES = { permanent: 'Dauercode', timed: 'Zeitcode', onetime: 'Einmalcode' };
   const WD = ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'];
-  let codesCache = [];
+  let codesCache = [], usersBrief = [], graceRunning = false, codesMeta = {};
 
+  function userName(uid) { const u = usersBrief.find(x => x.uid === uid); return u ? u.name : ('uid ' + uid); }
+  function sharedNames(mask) {
+    return usersBrief.filter(u => u.uid && (mask & (1 << u.uid))).map(u => `<span class="tag">${esc(u.name)}</span>`).join('') || '–';
+  }
   function codeValidity(c) {
     const parts = [];
     if (c.valid_from) parts.push('ab ' + fmtUnix(c.valid_from));
@@ -196,53 +244,111 @@
   }
   function codeStatus(c, now) {
     if (!c.enabled) return ['deaktiviert', 'warn'];
+    if (c.grace_remaining_s > 0) return ['Fenster läuft, noch ' + fmtSecs(c.grace_remaining_s), 'warn'];
     if (c.max_uses && c.uses >= c.max_uses) return ['aufgebraucht', 'bad'];
     if (c.valid_until && now > c.valid_until) return ['abgelaufen', 'bad'];
     if (c.valid_from && now < c.valid_from) return ['noch nicht gültig', 'warn'];
     return ['aktiv', 'ok'];
   }
-  async function loadCodes() {
+  function codeTypeText(c) {
+    let t = TYPE_NAMES[c.type] || c.type;
+    if (c.type === 'onetime' && c.grace_s) t += ` (${fmtSecs(c.grace_s)})`;
+    return t;
+  }
+  /* Was darf der angemeldete Benutzer mit diesem Code? */
+  function codeAccess(c) {
+    if (isAdmin()) return 'full';
+    if (c.owner === session.uid) return 'owner';
+    return session.perms && session.perms.edit_shared ? 'edit' : 'toggle';
+  }
+  function renderCodes() {
+    const now = Math.floor(Date.now() / 1000);
+    const f = isAdmin() ? $('#codes-filter').value : 'all';
+    const list = codesCache.filter(c => f === 'all' || (f === 'mine' ? c.owner === session.uid : c.shared !== 0));
+    graceRunning = codesCache.some(c => c.grace_remaining_s > 0);
+    $('#codes-table tbody').innerHTML = list.map(c => {
+      const st = codeStatus(c, now);
+      const acc = codeAccess(c);
+      return `<tr data-id="${c.id}">
+        <td>${esc(c.name)}</td><td><code>${esc(c.code)}</code></td><td>${codeTypeText(c)}</td>
+        <td>${doorsText(c.doors)}</td>
+        <td>${codeValidity(c)}</td><td>${c.uses}${c.max_uses && !c.grace_s ? ' / ' + c.max_uses : ''}</td>
+        <td>${esc(userName(c.owner))}${c.owner === session.uid ? ' <span class="hint">(ich)</span>' : ''}</td>
+        <td>${sharedNames(c.shared)}</td>
+        <td><span class="badge ${st[1]}">${st[0]}</span></td>
+        <td class="actions"><button class="secondary" data-act="edit">${acc === 'toggle' ? 'Ein/Aus' : 'Bearbeiten'}</button>
+          ${acc === 'full' || acc === 'owner' ? '<button class="danger" data-act="del">Löschen</button>' : ''}</td>
+      </tr>`;
+    }).join('') || '<tr><td colspan="10" class="hint">Keine Codes vorhanden.</td></tr>';
+  }
+  async function loadCodes(quiet) {
     const r = await api('/api/codes');
     codesCache = r.codes;
     doorsBrief = r.doors;
-    $('#codes-count').textContent = `(${r.codes.length} / ${r.max})`;
+    usersBrief = r.users;
+    codesMeta = r;
+    const quota = !isAdmin() && session.max_codes ? ` · eigenes Limit ${r.owned} / ${session.max_codes}` : '';
+    $('#codes-count').textContent = isAdmin() ? `(${r.total} / ${r.max})` : `(${r.codes.length} sichtbar, ${r.total} / ${r.max} gesamt${quota})`;
     $('#codes-time-warn').classList.toggle('hidden', r.time_valid);
-    const now = Math.floor(Date.now() / 1000);
-    $('#codes-table tbody').innerHTML = r.codes.map(c => {
-      const st = codeStatus(c, now);
-      return `<tr data-id="${c.id}">
-        <td>${esc(c.name)}</td><td><code>${esc(c.code)}</code></td><td>${TYPE_NAMES[c.type] || c.type}</td>
-        <td>${doorsText(c.doors)}</td>
-        <td>${codeValidity(c)}</td><td>${c.uses}${c.max_uses ? ' / ' + c.max_uses : ''}</td>
-        <td class="t">${fmtUnix(c.last_used) || '–'}</td><td><span class="badge ${st[1]}">${st[0]}</span></td>
-        <td class="actions"><button class="secondary" data-act="edit">Bearbeiten</button> <button class="danger" data-act="del">Löschen</button></td>
-      </tr>`;
-    }).join('') || '<tr><td colspan="9" class="hint">Noch keine Codes angelegt.</td></tr>';
+    if (!quiet || $('#code-editor').classList.contains('hidden')) renderCodes();
+  }
+  function renderOwnerSelect(sel, owner) {
+    sel.innerHTML = usersBrief.map(u => `<option value="${u.uid}" ${u.uid === owner ? 'selected' : ''}>${esc(u.name)}${u.admin ? ' (Admin)' : ''}${u.enabled ? '' : ' (gesperrt)'}</option>`).join('');
+  }
+  function renderShareChecks(container, mask, ownerUid) {
+    const cand = usersBrief.filter(u => u.uid && u.uid !== ownerUid && !u.admin);
+    container.innerHTML = cand.map(u =>
+      `<label><input type="checkbox" data-uid="${u.uid}" ${mask & (1 << u.uid) ? 'checked' : ''}> ${esc(u.name)}${u.enabled ? '' : ' <span class="hint">(gesperrt)</span>'}</label>`).join('')
+      || '<span class="hint">Keine weiteren Benutzer vorhanden.</span>';
+  }
+  function readShareChecks(container) {
+    let m = 0;
+    $$('input[data-uid]', container).forEach(i => { if (i.checked) m |= 1 << Number(i.dataset.uid); });
+    return m;
   }
   function openCodeEditor(c) {
     const f = $('#form-code');
     f.reset();
+    const acc = c ? codeAccess(c) : (isAdmin() ? 'full' : 'owner');
     $('#code-editor-title').textContent = c ? `Code bearbeiten: ${c.name}` : 'Neuer Code';
-    const data = c ? Object.assign({}, c) : { id: '', type: 'permanent', enabled: true, weekdays: 0x7F, win_from: 360, win_to: 1200, max_uses: 0, doors: allEnabledMask() || 1 };
+    const data = c ? Object.assign({}, c) : { id: '', type: TYPE_ORDER.find(typeAllowed) || 'permanent', enabled: true, weekdays: 0x7F, win_from: 360, win_to: 1200, max_uses: 0,
+      doors: (allEnabledMask() & (isAdmin() ? -1 : session.doors)) || (isAdmin() ? 1 : session.doors), owner: session.uid, shared: 0, grace_s: 0 };
     data.valid_from_local = unixToLocalInput(data.valid_from);
     data.valid_until_local = unixToLocalInput(data.valid_until);
     data.win_from_t = minToTime(data.win_from || 0);
     data.win_to_t = minToTime(data.win_to || 0);
+    data.grace_preset = [0, 30, 60, 120, 300, 600].includes(data.grace_s) ? String(data.grace_s) : 'custom';
     fillForm(f, data);
+    $$('option', f.type).forEach(o => { o.disabled = !typeAllowed(o.value); });
     $$('#code-weekdays input').forEach(i => i.checked = !!(data.weekdays & (1 << Number(i.dataset.wd))));
-    renderDoorChecks($('#code-doors'), data.doors);
+    renderDoorChecks($('#code-doors'), data.doors, null, isAdmin() ? null : session.doors);
+    if (isAdmin()) renderOwnerSelect(f.owner, data.owner);
+    renderShareChecks($('#code-share'), data.shared, data.owner);
+    /* Freigegeben ohne Bearbeitungsrecht: nur Aktiv-Schalter; Freigaben nur Besitzer/Admin */
+    const readOnly = acc === 'toggle';
+    $('#code-readonly-note').classList.toggle('hidden', !readOnly);
+    $$('input,select', f).forEach(i => { i.disabled = readOnly && i.name !== 'enabled'; });
+    $('#code-share-row').classList.toggle('hidden', acc === 'edit' || readOnly);
     toggleCodeFields();
     $('#code-editor').classList.remove('hidden');
     $('#code-editor').scrollIntoView({ behavior: 'smooth' });
   }
   function toggleCodeFields() {
     const f = $('#form-code');
+    const onetime = f.type.value === 'onetime';
     $('#code-window').classList.toggle('hidden', !f.win_enable.checked);
-    $('#code-maxuses-row').classList.toggle('hidden', f.type.value === 'onetime');
+    $('#code-maxuses-row').classList.toggle('hidden', onetime);
+    $('#code-grace-row').classList.toggle('hidden', !onetime);
+    $('#code-grace-custom').classList.toggle('hidden', f.grace_preset.value !== 'custom');
+    if (f.grace_preset.value !== 'custom') f.grace_s.value = f.grace_preset.value;
   }
   $('#btn-code-new').addEventListener('click', () => openCodeEditor(null));
   $('#btn-code-cancel').addEventListener('click', () => $('#code-editor').classList.add('hidden'));
-  $('#form-code').addEventListener('change', toggleCodeFields);
+  $('#form-code').addEventListener('change', (ev) => {
+    if (ev.target.name === 'owner') renderShareChecks($('#code-share'), readShareChecks($('#code-share')), Number(ev.target.value));
+    toggleCodeFields();
+  });
+  $('#codes-filter').addEventListener('change', renderCodes);
   $('#codes-table').addEventListener('click', async (ev) => {
     const btn = ev.target.closest('button[data-act]');
     if (!btn) return;
@@ -259,11 +365,15 @@
     $$('#code-weekdays input').forEach(i => { if (i.checked) weekdays |= 1 << Number(i.dataset.wd); });
     const doors = readDoorChecks($('#code-doors'));
     if (!doors) throw new Error('Mindestens eine Tür wählen');
+    const grace = d.type === 'onetime' ? Math.max(0, Math.min(codesMeta.grace_max_s || 600, Number(d.grace_s) || 0)) : 0;
     const body = {
       name: d.name, code: d.code, type: d.type, enabled: d.enabled, doors,
       valid_from: localInputToUnix(d.valid_from_local), valid_until: localInputToUnix(d.valid_until_local),
       win_enable: d.win_enable, weekdays, win_from: timeToMin(d.win_from_t), win_to: timeToMin(d.win_to_t),
-      max_uses: d.type === 'onetime' ? 1 : (d.max_uses || 0)
+      max_uses: d.type === 'onetime' ? 1 : (d.max_uses || 0),
+      owner: isAdmin() ? Number(d.owner) : session.uid,
+      shared: readShareChecks($('#code-share')),
+      grace_s: grace
     };
     if (body.type === 'timed' && !body.valid_from && !body.valid_until) throw new Error('Zeitcode braucht "gültig ab" oder "gültig bis"');
     if (body.valid_from && body.valid_until && body.valid_from >= body.valid_until) throw new Error('"Gültig bis" muss nach "gültig ab" liegen');
@@ -289,6 +399,124 @@
     $('#log-table tbody').innerHTML = logCache.filter(e => !f || e.cat === f).map(e =>
       `<tr><td class="t">${fmtTs(e)}</td><td><span class="cat ${e.cat}">${e.cat}</span></td><td>${esc(e.msg)}</td></tr>`).join('');
   }
+
+  /* ---------- Benutzer (Admin) ---------- */
+  let usersCache = [], usersMeta = {};
+  function typesText(mask) {
+    const t = TYPE_ORDER.filter((_, i) => mask & (1 << i)).map(k => TYPE_NAMES[k]);
+    return t.length === 3 ? 'alle' : (t.join(', ') || '<span class="bad">keine</span>');
+  }
+  function userRights(u) {
+    const r = [];
+    if (u.edit_shared) r.push('Freigaben bearbeiten');
+    if (u.open_doors) r.push('Türen öffnen');
+    if (u.twofa_enabled) r.push('2FA');
+    return r.join(', ') || '–';
+  }
+  async function loadUsers() {
+    const r = await api('/api/users');
+    usersCache = r.users;
+    usersMeta = r;
+    doorsBrief = r.doors;
+    $('#users-count').textContent = `(${r.users.length} / ${r.max})`;
+    $('#users-admin-name').textContent = r.admin_user;
+    $('#users-table tbody').innerHTML = r.users.map(u => {
+      const adm = u.role === 'admin';
+      return `<tr data-uid="${u.uid}">
+        <td>${esc(u.name)}${u.uid === r.me ? ' <span class="hint">(ich)</span>' : ''}</td>
+        <td>${adm ? '<span class="badge role">Admin</span>' : 'Benutzer'}</td>
+        <td>${adm ? 'alle' : typesText(u.code_types)}</td>
+        <td>${adm ? 'alle' : doorsText(u.doors)}</td>
+        <td>${adm ? 'alle' + (u.twofa_enabled ? ', 2FA' : '') : userRights(u)}</td>
+        <td>${u.codes_owned}${u.max_codes ? ' / ' + u.max_codes : ''}</td>
+        <td class="t">${fmtUnix(u.last_login) || 'nie'}</td>
+        <td><span class="badge ${u.enabled ? (u.must_change_pw ? 'warn' : 'ok') : 'bad'}">${u.enabled ? (u.must_change_pw ? 'Startpasswort' : 'aktiv') : 'gesperrt'}</span></td>
+        <td class="actions"><button class="secondary" data-act="edit">Bearbeiten</button>
+          <button class="secondary" data-act="pw">Passwort</button>
+          ${u.twofa_enabled ? '<button class="secondary" data-act="twofa">2FA zurücksetzen</button>' : ''}
+          ${u.uid !== r.me ? '<button class="danger" data-act="del">Löschen</button>' : ''}</td>
+      </tr>`;
+    }).join('') || '<tr><td colspan="9" class="hint">Noch keine Benutzer angelegt. Alle Codes gehören dem Admin.</td></tr>';
+  }
+  function openUserEditor(u) {
+    const f = $('#form-user');
+    f.reset();
+    $('#user-editor-title').textContent = u ? `Benutzer bearbeiten: ${u.name}` : 'Neuer Benutzer';
+    const data = u ? Object.assign({}, u) : { uid: '', name: '', role: 'user', enabled: true, must_change_pw: true, code_types: 7, doors: allEnabledMask() || 1, edit_shared: false, open_doors: false, max_codes: 0 };
+    fillForm(f, data);
+    f.password.required = !u;
+    $('#user-pw-row').classList.toggle('hidden', !!u);
+    $$('#user-rights input[data-ct]').forEach(i => i.checked = !!(data.code_types & (1 << Number(i.dataset.ct))));
+    renderDoorChecks($('#user-doors'), data.doors);
+    toggleUserFields();
+    $('#user-pwreset').classList.add('hidden');
+    $('#user-editor').classList.remove('hidden');
+    $('#user-editor').scrollIntoView({ behavior: 'smooth' });
+  }
+  function toggleUserFields() {
+    $('#user-rights').classList.toggle('hidden', $('#form-user').role.value === 'admin');
+  }
+  $('#btn-user-new').addEventListener('click', () => openUserEditor(null));
+  $('#btn-user-cancel').addEventListener('click', () => $('#user-editor').classList.add('hidden'));
+  $('#btn-user-pwreset-cancel').addEventListener('click', () => $('#user-pwreset').classList.add('hidden'));
+  $('#form-user').addEventListener('change', toggleUserFields);
+  $('#users-table').addEventListener('click', async (ev) => {
+    const btn = ev.target.closest('button[data-act]');
+    if (!btn) return;
+    const uid = Number(btn.closest('tr').dataset.uid);
+    const u = usersCache.find(x => x.uid === uid);
+    const act = btn.dataset.act;
+    if (act === 'edit') return openUserEditor(u);
+    if (act === 'pw') {
+      $('#user-pwreset-title').textContent = `Passwort zurücksetzen: ${u.name}`;
+      $('#form-user-pwreset').uid.value = uid;
+      $('#user-editor').classList.add('hidden');
+      $('#user-pwreset').classList.remove('hidden');
+      return;
+    }
+    try {
+      if (act === 'twofa') {
+        if (!confirm(`Zwei-Faktor-Authentifizierung von "${u.name}" zurücksetzen? Der Benutzer meldet sich danach nur mit Passwort an.`)) return;
+        await api(`/api/users/${uid}/twofa-reset`, { method: 'POST' });
+        toast('2FA zurückgesetzt', 'ok');
+      } else if (act === 'del') {
+        if (!confirm(`Benutzer "${u.name}" löschen?`)) return;
+        let mode = 'transfer';
+        if (u.codes_owned > 0) {
+          mode = confirm(`"${u.name}" besitzt ${u.codes_owned} Code(s).\n\nOK = Codes übernehmen (gehen an dich über)\nAbbrechen = Codes mitlöschen`) ? 'transfer' : 'delete';
+          if (mode === 'delete' && !confirm(`Wirklich alle ${u.codes_owned} Code(s) von "${u.name}" löschen?`)) return;
+        }
+        await api(`/api/users/${uid}?codes=${mode}`, { method: 'DELETE' });
+        toast('Benutzer gelöscht', 'ok');
+      }
+      await loadUsers();
+    } catch (e) { toast(e.message, 'bad'); }
+  });
+  onSubmit('#form-user', async (f) => {
+    const d = formData(f);
+    let types = 0;
+    $$('#user-rights input[data-ct]').forEach(i => { if (i.checked) types |= 1 << Number(i.dataset.ct); });
+    const body = { name: d.name.trim(), role: d.role, enabled: d.enabled, must_change_pw: d.must_change_pw, code_types: types,
+                   doors: readDoorChecks($('#user-doors')), edit_shared: d.edit_shared, open_doors: d.open_doors, max_codes: d.max_codes || 0 };
+    if (d.uid) {
+      await api('/api/users/' + d.uid, { method: 'PUT', json: body });
+    } else {
+      body.password = d.password;
+      await api('/api/users', { method: 'POST', json: body });
+    }
+    toast('Gespeichert', 'ok');
+    f.password.value = '';
+    $('#user-editor').classList.add('hidden');
+    await loadUsers();
+  });
+  onSubmit('#form-user-pwreset', async (f) => {
+    const d = formData(f);
+    await api(`/api/users/${d.uid}/password`, { method: 'POST', json: { password: d.password, must_change_pw: d.must_change_pw } });
+    toast('Passwort gesetzt, Sitzungen des Benutzers beendet', 'ok');
+    f.reset();
+    $('#user-pwreset').classList.add('hidden');
+    await loadUsers();
+  });
 
   /* ---------- API-Token ---------- */
   let tokensCache = [];
@@ -511,10 +739,11 @@ sensor:
     renderDoorForms(s.doors);
     renderKeypadDoorSelect(s.doors, s.keypad.door);
     fillForm($('#form-keypad'), s.keypad);
+    fillForm($('#form-site'), s.site);
     $('#form-password').user.value = s.admin_user;
+    $('#card-admin-password').classList.toggle('hidden', session.uid !== 0);
     $('#learn-panel').classList.toggle('hidden', !s.keypad.learn_mode);
     if (s.keypad.learn_mode) await loadLearn();
-    await loadTwofa();
   }
   async function loadLearn() {
     if ($('#learn-panel').classList.contains('hidden')) return;
@@ -527,6 +756,25 @@ sensor:
     $('#learn-ascii').textContent = r.ascii || '';
   }
 
+  /* ---------- Konto ---------- */
+  async function loadAccount() {
+    $('#account-name').textContent = session.user;
+    const rows = [['Benutzer', esc(session.user)], ['Rolle', isAdmin() ? 'Administrator' : 'Benutzer']];
+    if (!isAdmin()) {
+      if (!doorsBrief.length) {
+        const st = await api('/api/status');
+        doorsBrief = st.doors.map(d => ({ door: d.door, name: d.name, enabled: d.enabled }));
+      }
+      rows.push(['Darf anlegen', typesText(session.code_types)]);
+      rows.push(['Türen', doorsText(session.doors)]);
+      rows.push(['Freigegebene Codes', session.perms.edit_shared ? 'voll bearbeiten' : 'nur ein-/ausschalten']);
+      rows.push(['Türen per Web öffnen', session.perms.open_doors ? 'ja' : 'nein']);
+      rows.push(['Eigenes Code-Limit', session.max_codes || 'keins']);
+    }
+    kv($('#account-info'), rows);
+    await loadTwofa();
+  }
+
   /* ---------- Events ---------- */
   function onSubmit(id, fn) {
     $(id).addEventListener('submit', async (ev) => {
@@ -537,12 +785,15 @@ sensor:
       btn.disabled = false;
     });
   }
+  function applyLogin(r) {
+    session = Object.assign({}, session, r, { authenticated: true });
+  }
 
   onSubmit('#form-setup', async (f) => {
     const d = formData(f);
     if (d.password !== d.password2) throw new Error('Passwörter stimmen nicht überein');
     const r = await api('/api/setup', { method: 'POST', json: { user: d.user, password: d.password } });
-    session = { authenticated: true, csrf: r.csrf, user: r.user, hostname: session.hostname, tls: session.tls };
+    applyLogin(r);
     toast('Eingerichtet und angemeldet', 'ok'); location.hash = '#dashboard'; route();
   });
   let twofaTicket = null;
@@ -562,17 +813,37 @@ sensor:
       showLoginStep(true);
       return;
     }
-    session = { authenticated: true, csrf: r.csrf, user: r.user, hostname: session.hostname, tls: session.tls };
+    applyLogin(r);
     f.reset(); route();
   });
   onSubmit('#form-login-2fa', async (f) => {
     const r = await api('/api/login/2fa', { method: 'POST', json: { ticket: twofaTicket, code: f.code.value.trim() } });
-    session = { authenticated: true, csrf: r.csrf, user: r.user, hostname: session.hostname, tls: session.tls };
+    applyLogin(r);
     f.reset(); twofaTicket = null; showLoginStep(false); route();
   });
   $('#btn-2fa-back').addEventListener('click', () => { twofaTicket = null; $('#form-login-2fa').reset(); showLoginStep(false); });
 
-  /* ---------- 2FA-Verwaltung (System-Seite) ---------- */
+  /* Erzwungener Passwortwechsel nach Startpasswort */
+  onSubmit('#form-pwchange', async (f) => {
+    const d = formData(f);
+    if (d.new_password !== d.new_password2) throw new Error('Passwörter stimmen nicht überein');
+    await api('/api/account/password', { method: 'POST', json: { old_password: d.old_password, new_password: d.new_password } });
+    toast('Passwort gesetzt, bitte neu anmelden', 'ok');
+    f.reset(); session = { authenticated: false }; route();
+  });
+  $('#btn-pwchange-logout').addEventListener('click', async () => {
+    try { await api('/api/logout', { method: 'POST' }); } catch (e) { }
+    session = { authenticated: false }; route();
+  });
+  onSubmit('#form-account-password', async (f) => {
+    const d = formData(f);
+    if (d.new_password !== d.new_password2) throw new Error('Passwörter stimmen nicht überein');
+    await api('/api/account/password', { method: 'POST', json: { old_password: d.old_password, new_password: d.new_password } });
+    toast('Passwort geändert, bitte neu anmelden', 'ok');
+    f.reset(); session = { authenticated: false }; route();
+  });
+
+  /* ---------- 2FA-Verwaltung (Konto-Seite) ---------- */
   async function loadTwofa() {
     const t = await api('/api/twofa');
     kv($('#twofa-info'), [
@@ -691,10 +962,17 @@ sensor:
     await api('/api/system', { method: 'POST', json: { keypad: k } }); toast('Gespeichert', 'ok');
     await loadSystem();
   });
+  onSubmit('#form-site', async (f) => {
+    const site = formData(f);
+    await api('/api/system', { method: 'POST', json: { site } });
+    session.site = site;
+    toast('Gespeichert, erscheint ab jetzt auf der Anmeldeseite', 'ok');
+    route();
+  });
   onSubmit('#form-password', async (f) => {
     const d = formData(f);
     await api('/api/system/password', { method: 'POST', json: d });
-    toast('Passwort geändert, bitte neu anmelden', 'ok');
+    toast('Gespeichert, bitte neu anmelden', 'ok');
     session = { authenticated: false }; route();
   });
   $('#btn-restore').addEventListener('click', async () => {
@@ -702,7 +980,7 @@ sensor:
     if (!file) return toast('Bitte zuerst eine Backup-Datei wählen', 'bad');
     let data;
     try { data = JSON.parse(await file.text()); } catch (e) { return toast('Datei ist kein gültiges JSON', 'bad'); }
-    if (!confirm('Backup einspielen? Vorhandene Codes werden ersetzt.')) return;
+    if (!confirm('Backup einspielen? Vorhandene Codes' + (Array.isArray(data.users) ? ' und Benutzer' : '') + ' werden ersetzt.')) return;
     data.restore_network = $('#restore-net').checked;
     try { const r = await api('/api/restore', { method: 'POST', json: data }); toast('Eingespielt.' + (r.reboot_required ? ' Netzwerkänderungen nach Neustart aktiv.' : ''), 'ok'); }
     catch (e) { toast(e.message, 'bad'); }
@@ -713,7 +991,7 @@ sensor:
     catch (e) { toast(e.message, 'bad'); }
   });
   $('#btn-factory').addEventListener('click', async () => {
-    if (!confirm('WERKSRESET: Alle Einstellungen, Codes, API-Token, Zertifikat und Passwort löschen?')) return;
+    if (!confirm('WERKSRESET: Alle Einstellungen, Benutzer, Codes, API-Token, Zertifikat und Passwort löschen?')) return;
     if (!confirm('Wirklich? Das Gerät startet danach mit DHCP und Ersteinrichtung.')) return;
     try { await api('/api/system/factory-reset', { method: 'POST' }); toast('Werksreset, Gerät startet neu …', 'ok'); }
     catch (e) { toast(e.message, 'bad'); }

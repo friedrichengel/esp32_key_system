@@ -7,10 +7,12 @@
 #include "freertos/semphr.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 
 #include "storage.h"
 #include "time_sync.h"
 #include "event_log.h"
+#include "users.h"
 
 static const char *TAG = "codes";
 
@@ -25,6 +27,13 @@ static SemaphoreHandle_t s_lock;
 /* ------------------------------------------------------------------------
  * JSON (de)serialisierung
  * ---------------------------------------------------------------------- */
+uint32_t codes_grace_remaining_s(const code_entry_t *e)
+{
+    if (!e->grace_until_us) return 0;
+    int64_t rem = e->grace_until_us - esp_timer_get_time();
+    return rem > 0 ? (uint32_t)((rem + 999999) / 1000000) : 0;
+}
+
 cJSON *codes_entry_to_json(const code_entry_t *e)
 {
     cJSON *o = cJSON_CreateObject();
@@ -45,6 +54,10 @@ cJSON *codes_entry_to_json(const code_entry_t *e)
     cJSON_AddNumberToObject(o, "last_used", (double)e->last_used);
     cJSON_AddNumberToObject(o, "created_at", (double)e->created_at);
     cJSON_AddStringToObject(o, "created_by", e->created_by);
+    cJSON_AddNumberToObject(o, "owner", e->owner_uid);
+    cJSON_AddNumberToObject(o, "shared", e->shared);
+    cJSON_AddNumberToObject(o, "grace_s", e->grace_s);
+    cJSON_AddNumberToObject(o, "grace_remaining_s", codes_grace_remaining_s(e));   /* nur lesend */
     return o;
 }
 
@@ -64,6 +77,23 @@ static bool jb(const cJSON *o, const char *k, bool d)
     return cJSON_IsBool(i) ? cJSON_IsTrue(i) : d;
 }
 
+/* Typabhängige Felder in einen konsistenten Zustand bringen */
+static void normalize(code_entry_t *e)
+{
+    if (e->type == CODE_TYPE_ONETIME) {
+        e->max_uses = 1;
+        if (e->grace_s > CFG_ONETIME_GRACE_MAX_S) e->grace_s = CFG_ONETIME_GRACE_MAX_S;
+    } else {
+        e->grace_s = 0;
+        e->grace_until_us = 0;
+    }
+    if (e->win_from_min > 1439) e->win_from_min = 0;
+    if (e->win_to_min > 1440) e->win_to_min = 0;
+    e->doors &= CODES_ALL_DOORS;
+    e->shared &= USERS_SHARE_MASK;
+    if (e->owner_uid > CFG_USERS_MAX) e->owner_uid = 0;
+}
+
 bool codes_entry_from_json(const cJSON *o, code_entry_t *e)
 {
     memset(e, 0, sizeof(*e));
@@ -80,15 +110,17 @@ bool codes_entry_from_json(const cJSON *o, code_entry_t *e)
     e->weekdays = (uint8_t)jnum(o, "weekdays", 0x7F) & 0x7F;
     e->win_from_min = (uint16_t)jnum(o, "win_from", 0);
     e->win_to_min = (uint16_t)jnum(o, "win_to", 0);
-    e->doors = (uint32_t)jnum(o, "doors", CODES_ALL_DOORS) & CODES_ALL_DOORS;   /* alte Backups: alle Türen */
+    e->doors = (uint32_t)jnum(o, "doors", CODES_ALL_DOORS);     /* alte Backups: alle Türen */
     e->max_uses = (uint32_t)jnum(o, "max_uses", 0);
     e->uses = (uint32_t)jnum(o, "uses", 0);
     e->last_used = (int64_t)jnum(o, "last_used", 0);
     e->created_at = (int64_t)jnum(o, "created_at", 0);
     strlcpy(e->created_by, js(o, "created_by", ""), sizeof(e->created_by));
-    if (e->type == CODE_TYPE_ONETIME) e->max_uses = 1;
-    if (e->win_from_min > 1439) e->win_from_min = 0;
-    if (e->win_to_min > 1440) e->win_to_min = 0;
+    e->owner_uid = (uint8_t)jnum(o, "owner", 0);                 /* alte Dateien: Admin */
+    e->shared = (uint32_t)jnum(o, "shared", 0);
+    double g = jnum(o, "grace_s", 0);
+    e->grace_s = (uint16_t)(g < 0 ? 0 : g > CFG_ONETIME_GRACE_MAX_S ? CFG_ONETIME_GRACE_MAX_S : g);
+    normalize(e);
     return codes_valid_code_string(e->code) && e->name[0];
 }
 
@@ -164,6 +196,17 @@ size_t codes_count(void)
     return s_count;
 }
 
+size_t codes_count_owned(uint8_t owner_uid)
+{
+    size_t n = 0;
+    LOCK();
+    for (size_t i = 0; i < s_count; i++) {
+        if (s_codes[i].owner_uid == owner_uid) n++;
+    }
+    UNLOCK();
+    return n;
+}
+
 size_t codes_list(code_entry_t *out, size_t max)
 {
     LOCK();
@@ -207,8 +250,9 @@ esp_err_t codes_add(code_entry_t *e)
     e->id = s_next_id++;
     e->uses = 0;
     e->last_used = 0;
+    e->grace_until_us = 0;
     e->created_at = time_sync_is_valid() ? time(NULL) : 0;
-    if (e->type == CODE_TYPE_ONETIME) e->max_uses = 1;
+    normalize(e);
     s_codes[s_count++] = *e;
     esp_err_t err = save_locked();
     UNLOCK();
@@ -223,12 +267,13 @@ esp_err_t codes_update(const code_entry_t *e)
     if (i < 0) { UNLOCK(); return ESP_ERR_NOT_FOUND; }
     if (code_in_use_locked(e->code, e->id)) { UNLOCK(); return ESP_ERR_INVALID_STATE; }
     code_entry_t upd = *e;
-    /* Zähler und Herkunft bleiben erhalten */
+    /* Zähler, Herkunft und ein laufendes Nutzungsfenster bleiben erhalten */
     upd.uses = s_codes[i].uses;
     upd.last_used = s_codes[i].last_used;
     upd.created_at = s_codes[i].created_at;
+    upd.grace_until_us = s_codes[i].grace_until_us;
     strlcpy(upd.created_by, s_codes[i].created_by, sizeof(upd.created_by));
-    if (upd.type == CODE_TYPE_ONETIME) upd.max_uses = 1;
+    normalize(&upd);
     s_codes[i] = upd;
     esp_err_t err = save_locked();
     UNLOCK();
@@ -257,12 +302,43 @@ esp_err_t codes_clear(void)
 }
 
 /* ------------------------------------------------------------------------
+ * Besitz / Freigabe
+ * ---------------------------------------------------------------------- */
+bool codes_visible_to(const code_entry_t *e, uint8_t uid, bool is_admin)
+{
+    if (is_admin) return true;
+    return e->owner_uid == uid || (uid && (e->shared & USERS_UID_BIT(uid)));
+}
+
+esp_err_t codes_user_removed(uint8_t uid, bool delete_codes, uint8_t to_uid)
+{
+    if (uid == 0) return ESP_ERR_INVALID_ARG;
+    LOCK();
+    size_t w = 0;
+    for (size_t r = 0; r < s_count; r++) {
+        code_entry_t *e = &s_codes[r];
+        if (e->owner_uid == uid) {
+            if (delete_codes) continue;            /* Eintrag fällt weg */
+            e->owner_uid = to_uid;
+        }
+        e->shared &= ~USERS_UID_BIT(uid);
+        if (w != r) s_codes[w] = *e;
+        w++;
+    }
+    s_count = w;
+    esp_err_t err = save_locked();
+    UNLOCK();
+    return err;
+}
+
+/* ------------------------------------------------------------------------
  * Prüfung
  * ---------------------------------------------------------------------- */
-static code_result_t check_entry(const code_entry_t *e, time_t now, bool time_ok)
+static code_result_t check_entry(const code_entry_t *e, time_t now, bool time_ok, bool *in_grace)
 {
     if (!e->enabled) return CODE_DISABLED;
-    if (e->max_uses && e->uses >= e->max_uses) return CODE_USES_EXHAUSTED;
+    *in_grace = (e->type == CODE_TYPE_ONETIME && e->grace_until_us && esp_timer_get_time() < e->grace_until_us);
+    if (!*in_grace && e->max_uses && e->uses >= e->max_uses) return CODE_USES_EXHAUSTED;
 
     bool needs_time = (e->valid_from || e->valid_until || e->win_enable || e->type == CODE_TYPE_TIMED);
     if (needs_time && !time_ok) return CODE_TIME_UNKNOWN;
@@ -291,8 +367,10 @@ static code_result_t check_entry(const code_entry_t *e, time_t now, bool time_ok
     return CODE_OK;
 }
 
-code_result_t codes_check_and_use(const char *code, int door_idx, code_entry_t *matched)
+code_result_t codes_check_and_use(const char *code, int door_idx, code_entry_t *matched, bool *in_grace)
 {
+    bool grace = false;
+    if (in_grace) *in_grace = false;
     if (!codes_valid_code_string(code)) return CODE_UNKNOWN;
     if (door_idx < 0 || door_idx >= CFG_MAX_DOORS) return CODE_WRONG_DOOR;
     bool time_ok = time_sync_is_valid();
@@ -301,15 +379,21 @@ code_result_t codes_check_and_use(const char *code, int door_idx, code_entry_t *
 
     LOCK();
     for (size_t i = 0; i < s_count; i++) {
-        if (strcmp(s_codes[i].code, code) != 0) continue;
-        res = check_entry(&s_codes[i], now, time_ok);
-        if (res == CODE_OK && !(s_codes[i].doors & (1u << door_idx))) res = CODE_WRONG_DOOR;
+        code_entry_t *e = &s_codes[i];
+        if (strcmp(e->code, code) != 0) continue;
+        res = check_entry(e, now, time_ok, &grace);
+        if (res == CODE_OK && !(e->doors & (1u << door_idx))) res = CODE_WRONG_DOOR;
         if (res == CODE_OK) {
-            s_codes[i].uses++;
-            s_codes[i].last_used = time_ok ? now : 0;
+            if (e->type == CODE_TYPE_ONETIME && e->grace_s && e->uses == 0) {
+                /* erste Eingabe startet das Nutzungsfenster (Laufzeituhr, Neustart beendet es) */
+                e->grace_until_us = esp_timer_get_time() + (int64_t)e->grace_s * 1000000;
+            }
+            e->uses++;
+            e->last_used = time_ok ? now : 0;
             save_locked();
         }
-        if (matched) *matched = s_codes[i];
+        if (matched) *matched = *e;
+        if (in_grace) *in_grace = grace;
         break;
     }
     UNLOCK();
@@ -366,9 +450,15 @@ bool codes_valid_code_string(const char *code)
  * ---------------------------------------------------------------------- */
 cJSON *codes_to_json(void)
 {
+    return codes_to_json_for(0, true);
+}
+
+cJSON *codes_to_json_for(uint8_t uid, bool is_admin)
+{
     cJSON *arr = cJSON_CreateArray();
     LOCK();
     for (size_t i = 0; i < s_count; i++) {
+        if (!codes_visible_to(&s_codes[i], uid, is_admin)) continue;
         cJSON_AddItemToArray(arr, codes_entry_to_json(&s_codes[i]));
     }
     UNLOCK();

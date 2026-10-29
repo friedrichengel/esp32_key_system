@@ -49,11 +49,14 @@ main/
 ├── time_sync.[ch]      SNTP (esp_netif_sntp), TZ, Flag "Zeit gültig"
 ├── net_eth.[ch]        EMAC RGMII + generischer PHY + YT8531-Workarounds, IPv4/IPv6, mDNS
 ├── cert_store.[ch]     /storage/webserver_cert.pem + _key.pem, EC-P-256 selbstsigniert (PSA), Upload-Validierung
-├── auth.[ch]           PBKDF2-HMAC-SHA256 (PSA), 4 Sessions, CSRF, Login-Sperre,
-│                       2FA: TOTP (HMAC-SHA1 via PSA, ±1 Schritt, Replay-Schutz) + 8 Recovery-Codes (SHA-256-Hashes),
-│                       Pre-Auth-Tickets zwischen Passwort und zweitem Faktor; STRENG: ohne gültige Zeit nur Recovery-Code
+├── auth.[ch]           PBKDF2-HMAC-SHA256 (PSA), 8 Sessions mit uid, CSRF, Login-Sperre, auth_principal_t
+│                       (Rechte je Request frisch aus Admin/users.json), 2FA je Benutzer: TOTP (HMAC-SHA1 via PSA,
+│                       ±1 Schritt, Replay-Schutz) + 8 Recovery-Codes; Pre-Auth-Tickets; STRENG: ohne Zeit nur Recovery
+├── users.[ch]          bis zu CFG_USERS_MAX Benutzer (uid 1..16) in /storage/users.json: Hash, Rolle, erlaubte
+│                       Code-Typen, Türmaske, Rechte (edit_shared, open_doors), Kontingent, Startpasswort, eigene 2FA
 ├── web_server.[ch]     esp_https_server + Redirect-Server :80, REST-API, statische Dateien (gzip)
-├── codes_db.[ch]       Codes als /storage/codes.json, Prüfung (Gültigkeit, Fenster, Nutzungen)
+├── codes_db.[ch]       Codes als /storage/codes.json, Prüfung (Gültigkeit, Fenster, Nutzungen), owner_uid +
+│                       Freigabemaske shared (Bit uid), Einmalcode-Nutzungsfenster grace_s (Laufzeituhr, nur RAM)
 ├── keypad_rs232.[ch]   UART1-Task, Rahmen-Parser (Terminator/feste Länge/Timeout), Rohdaten für Lernmodus
 ├── door_relay.[ch]     bis zu CFG_MAX_DOORS Türen: Relais-Impuls per esp_timer, Türkontakt/REX entprellt
 ├── api_tokens.[ch]     Bearer-Token für Drittsysteme: SHA-256-Hash in /storage/tokens.json, Türmaske, Rechte,
@@ -82,12 +85,14 @@ keys/                   nur .gitkeep; private Schlüssel lokal
 - Jede sicherheitsrelevante Aktion über `event_log(EV_*, ...)`; **Codes nie protokollieren** (nur Länge/Name).
 - Zufall nur über `esp_fill_random()` / PSA. `rng_init()` in `main.c` (`bootloader_random_enable()`) muss der erste Aufruf bleiben, sonst liefert der S31 ohne Wi-Fi nur Pseudozufall. **Keinen ADC verwenden** (Konflikt mit der Entropiequelle).
 - Schreibende API-Routen verlangen Session-Cookie **und** Header `X-CSRF-Token` (`require_auth_csrf`). Ausnahme: `/api/v1/*` für Drittsysteme nutzt `Authorization: Bearer` (`require_bearer`), kein Cookie, kein CSRF.
+- Rollen: Admin (uid 0 im NVS oder Benutzer mit Rolle admin) darf alles; Admin-Routen über `require_admin[_csrf]`. Benutzer sehen nur eigene und freigegebene Codes; alle Regeln sitzen serverseitig in `code_rules()` (web_server.c), die UI blendet nur aus. Rechte nie in der Session cachen, immer `auth_session_principal()`.
+- Mit `must_change_pw` sind nur `/api/account/password` und `/api/logout` erlaubt.
 - Türen: intern Index 0..CFG_MAX_DOORS-1, in API/UI/Protokoll 1-basiert. Genau ein Keypad je Gerät (`g_settings.keypad.door`).
 - Deutsch in UI und Protokolltexten, ASCII-Umschreibungen (ue/oe/ae) in Log-Strings, Umlaute in HTML.
 - Compiler-Warnungen sind Fehler (`-Werror` im IDF-Default), insbesondere `format-truncation`.
-- `SETTINGS_VERSION` bei Strukturänderungen am NVS-Blob erhöhen; ohne Migrationscode fällt das Gerät auf Defaults zurück (Stand v3, noch keine Geräte im Feld).
+- `SETTINGS_VERSION` bei Strukturänderungen am NVS-Blob erhöhen (Stand v4). Neue Felder **nur am Ende** von `settings_t` anhängen und in `settings_migrate()` den alten Blob als Präfix übernehmen, sonst fällt das Gerät auf Defaults zurück.
 - Neue Web-Dateien in `main/CMakeLists.txt` (WEB_FILES), `tools/pio_pre_build.py` (FILES) und als Route in `web_server.c` eintragen.
 
 ## Stand
 
-Phasen 0–5 aus PLAN.md sind implementiert und bauen fehlerfrei. Erster Hardwaretest 24.10.2026 (Board an COM4): Boot, Ethernet (1000 Mbit/s, DHCP, SLAAC), HTTPS über IPv4/IPv6 und mDNS laufen. Der RGMII-Sendetakt muss aus der APLL kommen (`CONFIG_ETH_EMAC_RGMII_TX_CLK_SRC_APLL`), weil die MPLL vom PSRAM belegt ist. Testnetz hat weder Internet noch NTP, die Uhr bleibt dort ungültig. Keypad-Test 28.10.2026: RS232-Keypad über MAX3232 empfängt; Haken-Taste sendet 0x0D (Abschluss), X-Taste 0x08 (Löschen), beides Werksdefault. UART1 braucht `uart_set_rx_full_threshold(1)`, weil der RX-Timeout-Interrupt des S31 ein einzelnes Byte sonst erst mit dem nächsten liefert. Ungetestet: Relais, Türkontakt/REX (geplant über PC817-Optokopplermodul, siehe hardware.md), OTA, 2FA. Offene Punkte: PLAN.md §10 „Umsetzungsstand“ und §11.
+Phasen 0–5 aus PLAN.md sind implementiert und bauen fehlerfrei. Erster Hardwaretest 24.10.2026 (Board an COM4): Boot, Ethernet (1000 Mbit/s, DHCP, SLAAC), HTTPS über IPv4/IPv6 und mDNS laufen. Der RGMII-Sendetakt muss aus der APLL kommen (`CONFIG_ETH_EMAC_RGMII_TX_CLK_SRC_APLL`), weil die MPLL vom PSRAM belegt ist. Testnetz hat weder Internet noch NTP, die Uhr bleibt dort ungültig. Keypad-Test 28.10.2026: RS232-Keypad über MAX3232 empfängt; Haken-Taste sendet 0x0D (Abschluss), X-Taste 0x08 (Löschen), beides Werksdefault. UART1 braucht `uart_set_rx_full_threshold(1)`, weil der RX-Timeout-Interrupt des S31 ein einzelnes Byte sonst erst mit dem nächsten liefert. Ungetestet: Relais, Türkontakt/REX (geplant über PC817-Optokopplermodul, siehe hardware.md), OTA, 2FA. Phase 9 (29.10.2026, PLAN.md §8b–8d): Benutzer mit Rollen und Rechten, Besitz/Freigabe von Codes, 2FA je Benutzer, Loginseiten-Infos (Settings v4), Einmalcode-Nutzungsfenster; kompiliert, auf Hardware noch ungetestet. Offene Punkte: PLAN.md §10 „Umsetzungsstand“ und §11.

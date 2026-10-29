@@ -2,6 +2,7 @@
 
 #include <ctype.h>
 #include <string.h>
+#include <strings.h>
 #include <time.h>
 #include "esp_log.h"
 #include "esp_random.h"
@@ -12,10 +13,10 @@
 #include "settings.h"
 #include "event_log.h"
 #include "time_sync.h"
+#include "users.h"
 
 static const char *TAG = "auth";
 
-#define PW_ITERATIONS   10000
 #define TOTP_STEP_S     30
 #define TOTP_DIGITS     1000000
 #define PREAUTH_MAX     4
@@ -28,15 +29,16 @@ static uint32_t       s_lock_s = 60;
 
 typedef struct {
     char    ticket[AUTH_TICKET_HEX_LEN + 1];
-    char    user[32];
+    uint8_t uid;
     int64_t expires_us;
     uint8_t tries;
 } preauth_t;
 static preauth_t s_preauth[PREAUTH_MAX];
 
-/* Einrichtung in Arbeit (noch nicht bestätigt) */
+/* 2FA-Einrichtung in Arbeit (noch nicht bestätigt); ein Vorgang gleichzeitig, an eine uid gebunden */
 static struct {
     bool    active;
+    uint8_t uid;
     int64_t expires_us;
     uint8_t secret[SETTINGS_TOTP_SECRET_LEN];
     uint8_t recovery_hash[SETTINGS_RECOVERY_COUNT][32];
@@ -82,7 +84,7 @@ static bool sha256(const void *data, size_t len, uint8_t out[32])
     return psa_hash_compute(PSA_ALG_SHA_256, data, len, out, 32, &olen) == PSA_SUCCESS && olen == 32;
 }
 
-static bool const_time_eq(const uint8_t *a, const uint8_t *b, size_t n)
+bool auth_const_time_eq(const uint8_t *a, const uint8_t *b, size_t n)
 {
     uint8_t d = 0;
     for (size_t i = 0; i < n; i++) d |= a[i] ^ b[i];
@@ -90,8 +92,8 @@ static bool const_time_eq(const uint8_t *a, const uint8_t *b, size_t n)
 }
 
 /* PBKDF2-HMAC-SHA256 (RFC 8018); der Schlüssel wird einmal importiert */
-static int pbkdf2_sha256(const char *pw, const uint8_t *salt, size_t salt_len,
-                         uint32_t iterations, uint8_t *out, size_t out_len)
+int auth_hash_password(const char *pw, const uint8_t *salt, size_t salt_len,
+                       uint32_t iterations, uint8_t *out, size_t out_len)
 {
     psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
     psa_set_key_type(&attr, PSA_KEY_TYPE_HMAC);
@@ -134,42 +136,103 @@ static int pbkdf2_sha256(const char *pw, const uint8_t *salt, size_t salt_len,
     return (st == PSA_SUCCESS) ? 0 : -3;
 }
 
+bool auth_valid_username(const char *name)
+{
+    if (!name) return false;
+    size_t n = strlen(name);
+    if (n == 0 || n >= AUTH_NAME_LEN) return false;
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)name[i];
+        if (c <= 0x20 || c == 0x7F || c == '"' || c == '\\' || c == '<' || c == '>') return false;
+    }
+    return true;
+}
+
 /* ========================================================================
- * Passwort
+ * Passwort / Login
  * ====================================================================== */
 esp_err_t auth_set_password(const char *user, const char *password)
 {
-    if (!user || !*user || !password || strlen(password) < 8) {
+    if (!auth_valid_username(user) || !password || strlen(password) < AUTH_PW_MIN_LEN) {
         return ESP_ERR_INVALID_ARG;
+    }
+    if (!users_name_available(user, AUTH_UID_ADMIN)) {
+        return ESP_ERR_INVALID_STATE;             /* Name gehört bereits einem Benutzer */
     }
     settings_admin_t *a = &g_settings.admin;
     strlcpy(a->user, user, sizeof(a->user));
     esp_fill_random(a->pw_salt, sizeof(a->pw_salt));
-    a->pw_iterations = PW_ITERATIONS;
-    int ret = pbkdf2_sha256(password, a->pw_salt, sizeof(a->pw_salt), a->pw_iterations,
-                            a->pw_hash, sizeof(a->pw_hash));
+    a->pw_iterations = AUTH_PW_ITERATIONS;
+    int ret = auth_hash_password(password, a->pw_salt, sizeof(a->pw_salt), a->pw_iterations,
+                                 a->pw_hash, sizeof(a->pw_hash));
     if (ret != 0) {
         ESP_LOGE(TAG, "PBKDF2 fehlgeschlagen: %d", ret);
         return ESP_FAIL;
     }
     a->setup_done = true;
-    auth_sessions_clear();
+    auth_sessions_destroy_uid(AUTH_UID_ADMIN);
     return settings_save();
 }
 
-bool auth_verify_password(const char *user, const char *password)
+static bool admin_password_ok(const char *password)
 {
     const settings_admin_t *a = &g_settings.admin;
-    if (!a->setup_done || a->pw_iterations == 0 || !user || !password) {
-        return false;
-    }
+    if (!a->setup_done || a->pw_iterations == 0 || !password) return false;
     uint8_t hash[SETTINGS_PW_HASH_LEN];
-    if (pbkdf2_sha256(password, a->pw_salt, sizeof(a->pw_salt), a->pw_iterations, hash, sizeof(hash)) != 0) {
+    if (auth_hash_password(password, a->pw_salt, sizeof(a->pw_salt), a->pw_iterations, hash, sizeof(hash)) != 0) {
         return false;
     }
-    bool user_ok = (strcmp(user, a->user) == 0);
-    bool hash_ok = const_time_eq(hash, a->pw_hash, sizeof(hash));
-    return user_ok && hash_ok;
+    return auth_const_time_eq(hash, a->pw_hash, sizeof(hash));
+}
+
+bool auth_principal_load(uint8_t uid, auth_principal_t *p)
+{
+    memset(p, 0, sizeof(*p));
+    if (uid == AUTH_UID_ADMIN) {
+        if (!g_settings.admin.setup_done) return false;
+        p->uid = AUTH_UID_ADMIN;
+        p->is_admin = true;
+        strlcpy(p->name, g_settings.admin.user, sizeof(p->name));
+        p->code_types = USER_TYPES_ALL;
+        p->doors = CFG_ALL_DOORS_MASK;
+        p->perms = USER_PERM_ALL;
+        return true;
+    }
+    user_t u;
+    if (!users_get(uid, &u) || !u.enabled) return false;
+    users_fill_principal(&u, p);
+    return true;
+}
+
+auth_login_result_t auth_login_check(const char *user, const char *password, auth_principal_t *p)
+{
+    if (!user || !*user || !password) return LOGIN_BAD_CREDENTIALS;
+    const settings_admin_t *a = &g_settings.admin;
+    if (a->setup_done && strcmp(user, a->user) == 0) {
+        if (!admin_password_ok(password)) return LOGIN_BAD_CREDENTIALS;
+        auth_principal_load(AUTH_UID_ADMIN, p);
+        return LOGIN_OK;
+    }
+    user_t u;
+    if (users_get_by_name(user, &u)) {
+        if (!users_verify_password(&u, password)) return LOGIN_BAD_CREDENTIALS;
+        if (!u.enabled) return LOGIN_DISABLED;
+        users_fill_principal(&u, p);
+        return LOGIN_OK;
+    }
+    /* Unbekannter Name: trotzdem einen Hash rechnen, damit die Antwortzeit den Namen nicht verraet */
+    static const uint8_t dummy_salt[SETTINGS_PW_SALT_LEN] = { 0 };
+    uint8_t dummy[SETTINGS_PW_HASH_LEN];
+    auth_hash_password(password, dummy_salt, sizeof(dummy_salt), AUTH_PW_ITERATIONS, dummy, sizeof(dummy));
+    return LOGIN_BAD_CREDENTIALS;
+}
+
+bool auth_verify_principal_password(const auth_principal_t *p, const char *password)
+{
+    if (!p) return false;
+    if (p->uid == AUTH_UID_ADMIN) return admin_password_ok(password);
+    user_t u;
+    return users_get(p->uid, &u) && users_verify_password(&u, password);
 }
 
 bool auth_setup_required(void)
@@ -223,7 +286,7 @@ void auth_random_hex(char *out, size_t nbytes)
     out[2 * nbytes] = '\0';
 }
 
-auth_session_t *auth_session_create(const char *user)
+auth_session_t *auth_session_create(const auth_principal_t *p)
 {
     int64_t now = esp_timer_get_time();
     auth_session_t *slot = NULL;
@@ -243,7 +306,8 @@ auth_session_t *auth_session_create(const char *user)
     auth_random_hex(slot->token, AUTH_TOKEN_HEX_LEN / 2);
     auth_random_hex(slot->csrf, AUTH_CSRF_HEX_LEN / 2);
     slot->expires_us = now + (int64_t)CFG_SESSION_TIMEOUT_S * 1000000;
-    strlcpy(slot->user, user, sizeof(slot->user));
+    slot->uid = p->uid;
+    strlcpy(slot->user, p->name, sizeof(slot->user));
     return slot;
 }
 
@@ -256,7 +320,7 @@ auth_session_t *auth_session_find(const char *token)
     for (int i = 0; i < AUTH_MAX_SESSIONS; i++) {
         auth_session_t *s = &s_sessions[i];
         if (s->token[0] && s->expires_us >= now &&
-            const_time_eq((const uint8_t *)s->token, (const uint8_t *)token, AUTH_TOKEN_HEX_LEN)) {
+            auth_const_time_eq((const uint8_t *)s->token, (const uint8_t *)token, AUTH_TOKEN_HEX_LEN)) {
             s->expires_us = now + (int64_t)CFG_SESSION_TIMEOUT_S * 1000000;
             return s;
         }
@@ -277,10 +341,32 @@ void auth_sessions_clear(void)
     memset(s_sessions, 0, sizeof(s_sessions));
 }
 
+void auth_sessions_destroy_uid(uint8_t uid)
+{
+    for (int i = 0; i < AUTH_MAX_SESSIONS; i++) {
+        if (s_sessions[i].token[0] && s_sessions[i].uid == uid) {
+            memset(&s_sessions[i], 0, sizeof(s_sessions[i]));
+        }
+    }
+    for (int i = 0; i < PREAUTH_MAX; i++) {
+        if (s_preauth[i].ticket[0] && s_preauth[i].uid == uid) {
+            memset(&s_preauth[i], 0, sizeof(s_preauth[i]));
+        }
+    }
+}
+
+bool auth_session_principal(const auth_session_t *s, auth_principal_t *p)
+{
+    if (!s) return false;
+    if (!auth_principal_load(s->uid, p)) return false;
+    /* Admin-Konto umbenannt oder Benutzer gelöscht und uid neu vergeben: Session verfällt */
+    return strcmp(p->name, s->user) == 0;
+}
+
 /* ========================================================================
  * Pre-Auth-Tickets (zwischen Passwort und zweitem Faktor)
  * ====================================================================== */
-const char *auth_preauth_create(const char *user)
+const char *auth_preauth_create(const auth_principal_t *p)
 {
     int64_t now = esp_timer_get_time();
     preauth_t *slot = &s_preauth[0];
@@ -290,7 +376,7 @@ const char *auth_preauth_create(const char *user)
     }
     memset(slot, 0, sizeof(*slot));
     auth_random_hex(slot->ticket, AUTH_TICKET_HEX_LEN / 2);
-    strlcpy(slot->user, user, sizeof(slot->user));
+    slot->uid = p->uid;
     slot->expires_us = now + (int64_t)CFG_TWOFA_TICKET_TTL_S * 1000000;
     return slot->ticket;
 }
@@ -302,23 +388,22 @@ static preauth_t *preauth_find(const char *ticket)
     for (int i = 0; i < PREAUTH_MAX; i++) {
         preauth_t *p = &s_preauth[i];
         if (p->ticket[0] && p->expires_us >= now &&
-            const_time_eq((const uint8_t *)p->ticket, (const uint8_t *)ticket, AUTH_TICKET_HEX_LEN)) {
+            auth_const_time_eq((const uint8_t *)p->ticket, (const uint8_t *)ticket, AUTH_TICKET_HEX_LEN)) {
             return p;
         }
     }
     return NULL;
 }
 
-bool auth_preauth_check(const char *ticket, char *user_out, size_t user_len)
+bool auth_preauth_check(const char *ticket, auth_principal_t *p)
 {
-    preauth_t *p = preauth_find(ticket);
-    if (!p) return false;
-    if (++p->tries > PREAUTH_TRIES) {
-        memset(p, 0, sizeof(*p));
+    preauth_t *t = preauth_find(ticket);
+    if (!t) return false;
+    if (++t->tries > PREAUTH_TRIES) {
+        memset(t, 0, sizeof(*t));
         return false;
     }
-    strlcpy(user_out, p->user, user_len);
-    return true;
+    return auth_principal_load(t->uid, p);
 }
 
 void auth_preauth_consume(const char *ticket)
@@ -410,36 +495,64 @@ static bool normalize_recovery(const char *in, char out[AUTH_RECOVERY_LEN + 1])
     return true;
 }
 
-bool auth_twofa_enabled(void)
+/* 2FA-Datensatz lesen/schreiben: Admin im NVS-Blob, Benutzer in users.json */
+static bool twofa_get(uint8_t uid, settings_twofa_t *t)
 {
-    return g_settings.twofa.enabled;
+    if (uid == AUTH_UID_ADMIN) {
+        *t = g_settings.twofa;
+        return true;
+    }
+    return users_twofa_get(uid, t);
 }
 
-int auth_twofa_recovery_remaining(void)
+static esp_err_t twofa_put(uint8_t uid, const settings_twofa_t *t)
+{
+    if (uid == AUTH_UID_ADMIN) {
+        g_settings.twofa = *t;
+        return settings_save();
+    }
+    return users_twofa_set(uid, t);
+}
+
+static int recovery_remaining(const settings_twofa_t *t)
 {
     int n = 0;
     for (int i = 0; i < SETTINGS_RECOVERY_COUNT; i++) {
-        if (!(g_settings.twofa.recovery_used & (1u << i))) n++;
+        if (!(t->recovery_used & (1u << i))) n++;
     }
     return n;
 }
 
-esp_err_t auth_twofa_begin_setup(char secret_b32[AUTH_B32_SECRET_LEN],
+bool auth_twofa_enabled(uint8_t uid)
+{
+    settings_twofa_t t;
+    return twofa_get(uid, &t) && t.enabled;
+}
+
+int auth_twofa_recovery_remaining(uint8_t uid)
+{
+    settings_twofa_t t;
+    if (!twofa_get(uid, &t)) return 0;
+    return recovery_remaining(&t);
+}
+
+esp_err_t auth_twofa_begin_setup(uint8_t uid, char secret_b32[AUTH_B32_SECRET_LEN],
                                  char recovery[SETTINGS_RECOVERY_COUNT][AUTH_RECOVERY_LEN + 1])
 {
     memset(&s_pending, 0, sizeof(s_pending));
     esp_fill_random(s_pending.secret, sizeof(s_pending.secret));
     make_recovery_codes(recovery, s_pending.recovery_hash);
     base32_encode(s_pending.secret, sizeof(s_pending.secret), secret_b32);
+    s_pending.uid = uid;
     s_pending.active = true;
     s_pending.expires_us = esp_timer_get_time() + (int64_t)CFG_TWOFA_SETUP_TTL_S * 1000000;
     return ESP_OK;
 }
 
-esp_err_t auth_twofa_confirm_setup(const char *totp_code)
+esp_err_t auth_twofa_confirm_setup(uint8_t uid, const char *totp_code)
 {
-    if (!s_pending.active || esp_timer_get_time() > s_pending.expires_us) {
-        s_pending.active = false;
+    if (!s_pending.active || s_pending.uid != uid || esp_timer_get_time() > s_pending.expires_us) {
+        if (s_pending.uid == uid) s_pending.active = false;
         return ESP_ERR_INVALID_STATE;
     }
     if (!time_sync_is_valid()) {
@@ -449,43 +562,46 @@ esp_err_t auth_twofa_confirm_setup(const char *totp_code)
     if (step < 0) {
         return ESP_ERR_INVALID_ARG;
     }
-    settings_twofa_t *t = &g_settings.twofa;
-    memset(t, 0, sizeof(*t));
-    memcpy(t->secret, s_pending.secret, sizeof(t->secret));
-    memcpy(t->recovery_hash, s_pending.recovery_hash, sizeof(t->recovery_hash));
-    t->last_counter = step;
-    t->enabled = true;
+    settings_twofa_t t;
+    memset(&t, 0, sizeof(t));
+    memcpy(t.secret, s_pending.secret, sizeof(t.secret));
+    memcpy(t.recovery_hash, s_pending.recovery_hash, sizeof(t.recovery_hash));
+    t.last_counter = step;
+    t.enabled = true;
     memset(&s_pending, 0, sizeof(s_pending));
-    event_log(EV_CONFIG, "Zwei-Faktor-Authentifizierung (TOTP) aktiviert");
-    return settings_save();
+    esp_err_t err = twofa_put(uid, &t);
+    memset(&t, 0, sizeof(t));
+    return err;
 }
 
-void auth_twofa_cancel_setup(void)
+void auth_twofa_cancel_setup(uint8_t uid)
 {
-    memset(&s_pending, 0, sizeof(s_pending));
+    if (s_pending.uid == uid) memset(&s_pending, 0, sizeof(s_pending));
 }
 
-esp_err_t auth_twofa_disable(void)
+esp_err_t auth_twofa_disable(uint8_t uid)
 {
-    memset(&g_settings.twofa, 0, sizeof(g_settings.twofa));
-    event_log(EV_CONFIG, "Zwei-Faktor-Authentifizierung deaktiviert");
-    return settings_save();
+    settings_twofa_t t;
+    memset(&t, 0, sizeof(t));
+    return twofa_put(uid, &t);
 }
 
-esp_err_t auth_twofa_regenerate_recovery(char recovery[SETTINGS_RECOVERY_COUNT][AUTH_RECOVERY_LEN + 1])
+esp_err_t auth_twofa_regenerate_recovery(uint8_t uid, char recovery[SETTINGS_RECOVERY_COUNT][AUTH_RECOVERY_LEN + 1])
 {
-    if (!g_settings.twofa.enabled) return ESP_ERR_INVALID_STATE;
-    make_recovery_codes(recovery, g_settings.twofa.recovery_hash);
-    g_settings.twofa.recovery_used = 0;
-    event_log(EV_CONFIG, "Recovery-Codes neu erzeugt");
-    return settings_save();
+    settings_twofa_t t;
+    if (!twofa_get(uid, &t) || !t.enabled) return ESP_ERR_INVALID_STATE;
+    make_recovery_codes(recovery, t.recovery_hash);
+    t.recovery_used = 0;
+    esp_err_t err = twofa_put(uid, &t);
+    memset(&t, 0, sizeof(t));
+    return err;
 }
 
-twofa_result_t auth_twofa_verify(const char *code, bool *used_recovery)
+twofa_result_t auth_twofa_verify(uint8_t uid, const char *code, bool *used_recovery)
 {
     if (used_recovery) *used_recovery = false;
-    settings_twofa_t *t = &g_settings.twofa;
-    if (!t->enabled || !code) return TWOFA_NOT_ENABLED;
+    settings_twofa_t t;
+    if (!twofa_get(uid, &t) || !t.enabled || !code) return TWOFA_NOT_ENABLED;
 
     /* Recovery-Code? (10 Zeichen aus dem Alphabet, optional mit Bindestrich) */
     char norm[AUTH_RECOVERY_LEN + 1];
@@ -495,13 +611,13 @@ twofa_result_t auth_twofa_verify(const char *code, bool *used_recovery)
         uint8_t h[32];
         if (!sha256(norm, AUTH_RECOVERY_LEN, h)) return TWOFA_WRONG_CODE;
         for (int i = 0; i < SETTINGS_RECOVERY_COUNT; i++) {
-            bool match = const_time_eq(h, t->recovery_hash[i], 32);
-            if (match && (t->recovery_used & (1u << i))) return TWOFA_REPLAY;
+            bool match = auth_const_time_eq(h, t.recovery_hash[i], 32);
+            if (match && (t.recovery_used & (1u << i))) return TWOFA_REPLAY;
             if (match) {
-                t->recovery_used |= (1u << i);
-                settings_save();
+                t.recovery_used |= (1u << i);
+                twofa_put(uid, &t);
                 if (used_recovery) *used_recovery = true;
-                event_log(EV_LOGIN, "Recovery-Code verwendet, %d verbleibend", auth_twofa_recovery_remaining());
+                event_log(EV_LOGIN, "Recovery-Code verwendet (uid %u), %d verbleibend", uid, recovery_remaining(&t));
                 return TWOFA_OK;
             }
         }
@@ -510,10 +626,10 @@ twofa_result_t auth_twofa_verify(const char *code, bool *used_recovery)
 
     /* TOTP – strenge Variante: nur mit synchroner Uhr */
     if (!time_sync_is_valid()) return TWOFA_TIME_INVALID;
-    int64_t step = totp_match(t->secret, code);
+    int64_t step = totp_match(t.secret, code);
     if (step < 0) return TWOFA_WRONG_CODE;
-    if (step <= t->last_counter) return TWOFA_REPLAY;
-    t->last_counter = step;
-    settings_save();
+    if (step <= t.last_counter) return TWOFA_REPLAY;
+    t.last_counter = step;
+    twofa_put(uid, &t);
     return TWOFA_OK;
 }

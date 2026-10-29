@@ -8,16 +8,18 @@
 </head>
 <body>
 <header>
-  <div class="brand">🔑 <span id="hd-host">Key System</span></div>
+  <div class="brand">🔑 <span id="hd-host">Key System</span> <span id="hd-user" class="hint"></span></div>
   <nav id="nav" class="hidden">
     <a href="#dashboard">Übersicht</a>
     <a href="#codes">Codes</a>
-    <a href="#log">Protokoll</a>
-    <a href="#api">API</a>
-    <a href="#network">Netzwerk</a>
-    <a href="#cert">Zertifikat</a>
-    <a href="#firmware">Firmware</a>
-    <a href="#system">System</a>
+    <a href="#log" data-admin>Protokoll</a>
+    <a href="#users" data-admin>Benutzer</a>
+    <a href="#api" data-admin>API</a>
+    <a href="#network" data-admin>Netzwerk</a>
+    <a href="#cert" data-admin>Zertifikat</a>
+    <a href="#firmware" data-admin>Firmware</a>
+    <a href="#system" data-admin>System</a>
+    <a href="#account">Konto</a>
     <a href="#" id="btn-logout" class="muted">Abmelden</a>
   </nav>
 </header>
@@ -56,6 +58,28 @@
     <p id="tls-warn" class="note warn hidden">⚠ Verbindung ist nicht verschlüsselt (Notfallmodus ohne Zertifikat).</p>
   </section>
 
+  <!-- Anlagen-/Betreuerinfo (ohne Anmeldung sichtbar) -->
+  <section id="site-box" class="card narrow site hidden">
+    <h3 id="site-name"></h3>
+    <p id="site-text"></p>
+    <p id="site-mail-row">Systembetreuer: <a id="site-mail" href="#"></a></p>
+  </section>
+
+  <!-- Startpasswort ändern (erzwungen) -->
+  <section id="view-pwchange" class="view card narrow hidden">
+    <h2>Passwort festlegen</h2>
+    <p class="note warn">Du bist mit einem Startpasswort angemeldet. Bitte lege jetzt ein eigenes Passwort fest (mindestens 8 Zeichen), bevor es weitergeht.</p>
+    <form id="form-pwchange">
+      <label>Startpasswort <input name="old_password" type="password" required autocomplete="current-password"></label>
+      <label>Neues Passwort <input name="new_password" type="password" minlength="8" required autocomplete="new-password"></label>
+      <label>Neues Passwort wiederholen <input name="new_password2" type="password" minlength="8" required autocomplete="new-password"></label>
+      <div class="row">
+        <button type="submit">Passwort speichern</button>
+        <button type="button" class="secondary" id="btn-pwchange-logout">Abmelden</button>
+      </div>
+    </form>
+  </section>
+
   <!-- Dashboard -->
   <section id="view-dashboard" class="view hidden">
     <div class="grid">
@@ -67,7 +91,7 @@
         <h3>Keypad</h3>
         <div class="kv" id="dash-keypad"></div>
       </div>
-      <div class="card">
+      <div class="card" data-admin>
         <h3>Netzwerk</h3>
         <div class="kv" id="dash-net"></div>
       </div>
@@ -76,7 +100,7 @@
         <div class="kv" id="dash-sys"></div>
       </div>
     </div>
-    <div class="card">
+    <div class="card" data-admin>
       <h3>Letzte Ereignisse</h3>
       <table class="log" id="dash-log"><tbody></tbody></table>
     </div>
@@ -87,16 +111,24 @@
     <div class="card">
       <div class="row" style="justify-content:space-between">
         <h2 style="margin:0">Zutrittscodes <span class="hint" id="codes-count"></span></h2>
-        <button id="btn-code-new">Neuer Code</button>
+        <div class="row" style="margin:0">
+          <select id="codes-filter" data-admin>
+            <option value="all">Alle Codes</option>
+            <option value="mine">Meine Codes</option>
+            <option value="shared">Freigegebene Codes</option>
+          </select>
+          <button id="btn-code-new">Neuer Code</button>
+        </div>
       </div>
       <p class="note warn hidden" id="codes-time-warn">⚠ Uhrzeit nicht synchron: Zeit- und Einmalcodes mit Gültigkeit werden derzeit abgelehnt, Dauercodes ohne Zeitfenster funktionieren.</p>
       <table class="log" id="codes-table">
-        <thead><tr><th>Name</th><th>Code</th><th>Typ</th><th>Türen</th><th>Gültigkeit</th><th>Nutzungen</th><th>Zuletzt</th><th>Status</th><th></th></tr></thead>
+        <thead><tr><th>Name</th><th>Code</th><th>Typ</th><th>Türen</th><th>Gültigkeit</th><th>Nutzungen</th><th>Besitzer</th><th>Freigabe</th><th>Status</th><th></th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
     <div class="card hidden" id="code-editor">
       <h3 id="code-editor-title">Neuer Code</h3>
+      <p class="note hidden" id="code-readonly-note">Dieser Code ist dir freigegeben. Du kannst ihn ein- und ausschalten; Änderungen nimmt der Besitzer vor.</p>
       <form id="form-code">
         <input type="hidden" name="id">
         <div class="grid2">
@@ -104,10 +136,26 @@
           <label>Code <input name="code" minlength="4" maxlength="12" pattern="[A-Za-z0-9]{4,12}" required placeholder="4–12 Zeichen"></label>
           <label>Typ <select name="type"><option value="permanent">Dauercode</option><option value="timed">Zeitcode (von/bis)</option><option value="onetime">Einmalcode</option></select></label>
           <label><input type="checkbox" name="enabled" checked> Aktiv</label>
+          <label id="code-owner-row" data-admin>Besitzer <select name="owner"></select></label>
         </div>
         <fieldset><legend>Türen</legend>
           <div class="row" id="code-doors"></div>
           <p class="hint">Am Keypad öffnet ein Code nur die dem Keypad zugeordnete Tür; über Web-UI und API gelten die hier gewählten Türen.</p>
+        </fieldset>
+        <fieldset id="code-grace-row"><legend>Einmalcode: Nutzungsdauer nach der ersten Eingabe</legend>
+          <div class="grid2">
+            <label>Nutzbar für <select name="grace_preset">
+              <option value="0">sofort verbraucht (genau eine Eingabe)</option>
+              <option value="30">30 Sekunden</option>
+              <option value="60">1 Minute</option>
+              <option value="120">2 Minuten</option>
+              <option value="300">5 Minuten</option>
+              <option value="600">10 Minuten</option>
+              <option value="custom">anderer Wert …</option>
+            </select></label>
+            <label id="code-grace-custom">Sekunden (0–600) <input name="grace_s" type="number" min="0" max="600" value="0"></label>
+          </div>
+          <p class="hint">Das Fenster beginnt mit der ersten gültigen Eingabe am Keypad. Bis dahin verfällt nichts. Ein Neustart des Geräts beendet ein laufendes Fenster.</p>
         </fieldset>
         <fieldset id="code-validity"><legend>Gültigkeit</legend>
           <div class="grid2">
@@ -135,6 +183,10 @@
           </div>
         </fieldset>
         <label id="code-maxuses-row">Maximale Nutzungen (0 = unbegrenzt) <input name="max_uses" type="number" min="0" value="0"></label>
+        <fieldset id="code-share-row"><legend>Freigabe für andere Benutzer</legend>
+          <div class="row" id="code-share"></div>
+          <p class="hint">Freigegebene Benutzer sehen den Code und können ihn ein- und ausschalten. Ob sie ihn auch bearbeiten dürfen, legt der Admin je Benutzer fest. Löschen kann nur der Besitzer.</p>
+        </fieldset>
         <div class="row">
           <button type="submit">Speichern</button>
           <button type="button" class="secondary" id="btn-code-cancel">Abbrechen</button>
@@ -161,6 +213,64 @@
       <button id="btn-log-csv" class="secondary">CSV exportieren</button>
     </div>
     <table class="log" id="log-table"><thead><tr><th>Zeit</th><th>Kategorie</th><th>Meldung</th></tr></thead><tbody></tbody></table>
+  </section>
+
+  <!-- Benutzer -->
+  <section id="view-users" class="view hidden">
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <h2 style="margin:0">Benutzer <span class="hint" id="users-count"></span></h2>
+        <button id="btn-user-new">Neuer Benutzer</button>
+      </div>
+      <p class="hint">Benutzer sehen nur Codes, die sie selbst angelegt haben oder die ihnen freigegeben wurden. Der Admin sieht und bearbeitet alles. Das Hauptkonto <strong id="users-admin-name"></strong> liegt im Gerät und erscheint hier nicht.</p>
+      <table class="log" id="users-table">
+        <thead><tr><th>Name</th><th>Rolle</th><th>Code-Typen</th><th>Türen</th><th>Rechte</th><th>Codes</th><th>Letzter Login</th><th>Status</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="card hidden" id="user-editor">
+      <h3 id="user-editor-title">Neuer Benutzer</h3>
+      <form id="form-user">
+        <input type="hidden" name="uid">
+        <div class="grid2">
+          <label>Name <input name="name" maxlength="31" required autocomplete="off" placeholder="z. B. mueller"></label>
+          <label id="user-pw-row">Startpasswort <input name="password" type="password" minlength="8" autocomplete="new-password" placeholder="mind. 8 Zeichen"></label>
+          <label>Rolle <select name="role"><option value="user">Benutzer</option><option value="admin">Administrator (alle Rechte)</option></select></label>
+          <label>Maximale Anzahl eigener Codes (0 = kein eigenes Limit) <input name="max_codes" type="number" min="0" max="200" value="0"></label>
+          <label><input type="checkbox" name="enabled" checked> Aktiv (darf sich anmelden)</label>
+          <label><input type="checkbox" name="must_change_pw" checked> Muss das Passwort beim nächsten Login ändern</label>
+        </div>
+        <div id="user-rights">
+          <fieldset><legend>Darf diese Code-Typen anlegen</legend>
+            <div class="row">
+              <label><input type="checkbox" data-ct="0" checked> Dauercode</label>
+              <label><input type="checkbox" data-ct="1" checked> Zeitcode</label>
+              <label><input type="checkbox" data-ct="2" checked> Einmalcode</label>
+            </div>
+          </fieldset>
+          <fieldset><legend>Türen (für Codes und zum Öffnen per Web-UI)</legend><div class="row" id="user-doors"></div></fieldset>
+          <fieldset><legend>Weitere Rechte</legend>
+            <label><input type="checkbox" name="edit_shared"> Freigegebene Codes anderer Benutzer voll bearbeiten (sonst nur ein-/ausschalten)</label>
+            <label><input type="checkbox" name="open_doors"> Türen über die Webseite öffnen</label>
+          </fieldset>
+        </div>
+        <div class="row">
+          <button type="submit">Speichern</button>
+          <button type="button" class="secondary" id="btn-user-cancel">Abbrechen</button>
+        </div>
+      </form>
+    </div>
+    <div class="card hidden" id="user-pwreset">
+      <h3 id="user-pwreset-title">Passwort zurücksetzen</h3>
+      <form id="form-user-pwreset" class="row">
+        <input type="hidden" name="uid">
+        <label>Neues Startpasswort <input name="password" type="password" minlength="8" required autocomplete="new-password"></label>
+        <label><input type="checkbox" name="must_change_pw" checked> Beim nächsten Login ändern</label>
+        <button type="submit">Setzen</button>
+        <button type="button" class="secondary" id="btn-user-pwreset-cancel">Abbrechen</button>
+      </form>
+      <p class="hint">Alle Sitzungen des Benutzers werden beendet. Seine Zwei-Faktor-Einrichtung bleibt erhalten; sie lässt sich in der Tabelle separat zurücksetzen.</p>
+    </div>
   </section>
 
   <!-- API-Token -->
@@ -334,8 +444,18 @@
       </div>
     </div>
     <div class="card">
+      <h2>Anlage und Betreuer</h2>
+      <p class="note warn">⚠ Diese Angaben stehen auf der Anmeldeseite und sind für jeden sichtbar, der das Gerät im Netz erreicht. Nichts eintragen, was nicht öffentlich sein darf.</p>
+      <form id="form-site">
+        <label>Anlagenbezeichnung <input name="name" maxlength="31" placeholder="z. B. Werkstatt Nord"></label>
+        <label>E-Mail des Systembetreuers <input name="support_email" type="email" maxlength="63" placeholder="z. B. technik@example.org"></label>
+        <label>Weitere Informationen (Adresse, Hinweise) <textarea name="info_text" rows="4" maxlength="511" placeholder="z. B. Musterstraße 1, 12345 Musterstadt&#10;Hintereingang, Keypad links neben der Tür"></textarea></label>
+        <button type="submit">Speichern</button>
+      </form>
+    </div>
+    <div class="card">
       <h2>Sicherung</h2>
-      <p class="hint">Enthält Netzwerk-, Tür- und Keypad-Einstellungen sowie alle Codes. Admin-Passwort, API-Token, Zertifikat und Key sind nicht enthalten.</p>
+      <p class="hint">Enthält Netzwerk-, Tür-, Keypad- und Anlageneinstellungen, alle Benutzer (mit Passwort-Hash und 2FA) sowie alle Codes. Admin-Passwort, API-Token, Zertifikat und Key sind nicht enthalten. Die Datei enthält Zutrittscodes im Klartext, entsprechend sicher aufbewahren.</p>
       <div class="row">
         <a class="button secondary" href="/api/backup" download>Backup herunterladen</a>
         <input type="file" id="file-restore" accept=".json,application/json">
@@ -343,14 +463,41 @@
         <button id="btn-restore" class="danger">Backup einspielen</button>
       </div>
     </div>
-    <div class="card">
-      <h2>Admin-Passwort</h2>
+    <div class="card" id="card-admin-password">
+      <h2>Admin-Hauptkonto</h2>
       <form id="form-password">
-        <label>Benutzer <input name="user" autocomplete="username"></label>
-        <label>Altes Passwort <input name="old_password" type="password" required autocomplete="current-password"></label>
+        <label>Benutzername <input name="user" autocomplete="username"></label>
+        <label>Aktuelles Passwort <input name="old_password" type="password" required autocomplete="current-password"></label>
         <label>Neues Passwort <input name="new_password" type="password" minlength="8" required autocomplete="new-password"></label>
+        <button type="submit">Speichern</button>
+      </form>
+      <p class="hint">Hier lässt sich auch der Name des Hauptkontos ändern. Das eigene Passwort ohne Umbenennung geht ebenso unter „Konto“.</p>
+    </div>
+    <div class="card">
+      <h2>Gerät</h2>
+      <div class="row">
+        <button id="btn-reboot" class="secondary">Neustart</button>
+        <button id="btn-factory" class="danger">Werksreset</button>
+      </div>
+      <p class="hint">Werksreset löscht alle Einstellungen, Benutzer, Codes, API-Token, das Zertifikat und das Admin-Passwort.</p>
+    </div>
+  </section>
+
+  <!-- Konto -->
+  <section id="view-account" class="view hidden">
+    <div class="card">
+      <h2>Mein Konto <span class="hint" id="account-name"></span></h2>
+      <div class="kv" id="account-info"></div>
+    </div>
+    <div class="card">
+      <h2>Passwort ändern</h2>
+      <form id="form-account-password">
+        <label>Aktuelles Passwort <input name="old_password" type="password" required autocomplete="current-password"></label>
+        <label>Neues Passwort <input name="new_password" type="password" minlength="8" required autocomplete="new-password"></label>
+        <label>Neues Passwort wiederholen <input name="new_password2" type="password" minlength="8" required autocomplete="new-password"></label>
         <button type="submit">Passwort ändern</button>
       </form>
+      <p class="hint">Danach ist eine neue Anmeldung nötig.</p>
     </div>
     <div class="card">
       <h2>Zwei-Faktor-Authentifizierung (TOTP)</h2>
@@ -359,7 +506,7 @@
       <div id="twofa-off">
         <p class="hint">Nach der Aktivierung wird beim Login zusätzlich ein 6-stelliger Code aus einer Authenticator-App verlangt (Google Authenticator, Aegis, Microsoft Authenticator, Passwortmanager). Du erhältst 8 Recovery-Codes für den Fall, dass App oder Uhrzeit nicht verfügbar sind.</p>
         <form id="form-twofa-setup" class="row">
-          <label>Admin-Passwort <input name="password" type="password" required autocomplete="current-password"></label>
+          <label>Passwort <input name="password" type="password" required autocomplete="current-password"></label>
           <button type="submit">2FA einrichten</button>
         </form>
       </div>
@@ -390,7 +537,7 @@
       <div id="twofa-on" class="hidden">
         <form id="form-twofa-manage">
           <div class="grid2">
-            <label>Admin-Passwort <input name="password" type="password" required autocomplete="current-password"></label>
+            <label>Passwort <input name="password" type="password" required autocomplete="current-password"></label>
             <label>App-Code oder Recovery-Code <input name="code" required autocomplete="one-time-code"></label>
           </div>
           <div class="row">
@@ -400,14 +547,6 @@
         </form>
         <pre id="twofa-recovery-new" class="raw recovery hidden"></pre>
       </div>
-    </div>
-    <div class="card">
-      <h2>Gerät</h2>
-      <div class="row">
-        <button id="btn-reboot" class="secondary">Neustart</button>
-        <button id="btn-factory" class="danger">Werksreset</button>
-      </div>
-      <p class="hint">Werksreset löscht alle Einstellungen, Codes, API-Token, das Zertifikat und das Admin-Passwort.</p>
     </div>
   </section>
 </main>

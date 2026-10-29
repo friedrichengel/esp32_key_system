@@ -87,15 +87,23 @@ void access_on_keypad_code(const char *code)
         return;
     }
     code_entry_t m;
-    code_result_t res = codes_check_and_use(code, door, &m);
+    bool in_grace = false;
+    code_result_t res = codes_check_and_use(code, door, &m, &in_grace);
     if (res != CODE_OK) {
         on_failure(res, len);
         return;
     }
     s_fail_count = 0;
     s_lock_s = CFG_KEYPAD_LOCK_BASE_S;
-    event_log(EV_ACCESS, "Zutritt Tuer %d: '%s' (#%" PRIu32 ", %s%s) per Keypad", door + 1, m.name, m.id,
-              codes_type_name(m.type), m.max_uses ? (m.uses >= m.max_uses ? ", letzte Nutzung" : "") : "");
+    if (m.type == CODE_TYPE_ONETIME && m.grace_s) {
+        /* Einmalcode mit Nutzungsfenster: erste Eingabe startet es, weitere laufen darin */
+        event_log(EV_ACCESS, "Zutritt Tuer %d: '%s' (#%" PRIu32 ", onetime) per Keypad, %s noch %" PRIu32 " s",
+                  door + 1, m.name, m.id, in_grace ? "erneut im Nutzungsfenster," : "Nutzungsfenster gestartet,",
+                  codes_grace_remaining_s(&m));
+    } else {
+        event_log(EV_ACCESS, "Zutritt Tuer %d: '%s' (#%" PRIu32 ", %s%s) per Keypad", door + 1, m.name, m.id,
+                  codes_type_name(m.type), m.max_uses ? (m.uses >= m.max_uses ? ", letzte Nutzung" : "") : "");
+    }
     door_open(door, m.name, 0);
 }
 

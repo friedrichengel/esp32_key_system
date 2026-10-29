@@ -62,11 +62,21 @@ void settings_set_defaults(settings_t *s)
     s->admin.setup_done = false;
 }
 
-/* Platz für spätere Versionssprünge: alte Blobs feldweise übernehmen. */
-static void settings_migrate(settings_t *s, uint32_t from_version)
+/* v3 -> v4: site wurde am Ende angehängt, der alte Blob ist ein Präfix des neuen. */
+#define SETTINGS_V3_SIZE (sizeof(settings_t) - sizeof(settings_site_t))
+
+/* Blob mit anderer Version/Größe übernehmen, soweit das Layout es erlaubt; sonst Defaults. */
+static bool settings_migrate(settings_t *s, const settings_t *old, uint32_t from_version, size_t old_len)
 {
-    (void)s;
-    ESP_LOGW(TAG, "Konfiguration v%" PRIu32 " -> v%d migriert", from_version, SETTINGS_VERSION);
+    if (from_version == 3 && old_len == SETTINGS_V3_SIZE) {
+        memcpy(s, old, SETTINGS_V3_SIZE);
+        memset(&s->site, 0, sizeof(s->site));
+        s->version = SETTINGS_VERSION;
+        ESP_LOGW(TAG, "Konfiguration v3 -> v4 migriert (Loginseiten-Infos leer)");
+        return true;
+    }
+    ESP_LOGW(TAG, "Konfiguration v%" PRIu32 " (%u Byte) nicht migrierbar, Defaults", from_version, (unsigned)old_len);
+    return false;
 }
 
 esp_err_t settings_init(void)
@@ -99,7 +109,9 @@ esp_err_t settings_init(void)
     settings_set_defaults(&g_settings);
     if (err == ESP_OK) {
         /* Blob vorhanden, aber andere Version/Größe */
-        settings_migrate(&g_settings, tmp.version);
+        if (!settings_migrate(&g_settings, &tmp, tmp.version, len)) {
+            settings_set_defaults(&g_settings);
+        }
     } else {
         ESP_LOGW(TAG, "Konfiguration unlesbar (%s), Defaults", esp_err_to_name(err));
     }

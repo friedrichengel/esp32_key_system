@@ -207,6 +207,40 @@ Speicherung: NVS-Namespace `codes`, bis ~200 Einträge, Codes im Klartext. Ehrli
 
 ---
 
+## 8b. Benutzer, Besitz und Freigabe von Codes (entschieden 29.10.2026, umgesetzt)
+
+**Identitäten**
+
+- Der **Admin (uid 0)** bleibt im NVS-Blob (`settings.admin`, `settings.twofa`) und ist das Bootstrap-Konto, das auch ohne funktionierendes Dateisystem einloggen kann.
+- **Bis zu `CFG_USERS_MAX` = 16 weitere Benutzer** (uid 1..16, zusätzlich zum Admin) liegen in `/storage/users.json` (`users.[ch]`, Aufbau wie `api_tokens.c`): Name, PBKDF2-Hash + Salt, Rolle (`user`/`admin`), aktiv, `must_change_pw`, erlaubte Code-Typen (Bitmaske `code_type_t`), Türmaske, Rechte (`USER_PERM_EDIT_SHARED`, `USER_PERM_OPEN_DOORS`), Kontingent `max_codes`, erstellt von/am, letzter Login, eigene 2FA (`settings_twofa_t`).
+- **Rechte werden bei jedem Request frisch gelesen** (`auth_session_principal` → `auth_principal_t`), nicht in der Session gecacht. Sperren, Löschen oder Passwort-Reset wirken sofort; `auth_sessions_destroy_uid()` beendet gezielt die Sessions eines Benutzers. `AUTH_MAX_SESSIONS` = 8.
+- Login prüft erst den Admin-Namen, dann `users.json`; unbekannte Namen rechnen trotzdem einen PBKDF2-Hash (gleiche Antwortzeit). Gesperrte Benutzer bekommen bei richtigem Passwort 403 „gesperrt“.
+- **Startpasswort:** Admin vergibt es beim Anlegen oder Zurücksetzen (`must_change_pw`). Bis zum Wechsel sind nur `/api/account/password` und `/api/logout` erlaubt (403 sonst), die UI zeigt nur den Wechsel-Dialog.
+- **2FA je Benutzer:** dieselben Routen `/api/twofa/*` wirken auf das eigene Konto (uid aus der Session); Admin setzt 2FA eines Benutzers per `POST /api/users/<uid>/twofa-reset` zurück. Eine Einrichtung gleichzeitig (pending an uid gebunden).
+
+**Besitz und Freigabe von Codes**
+
+- `code_entry_t` hat `owner_uid` (0 = Admin, fehlendes Feld in alten Dateien = Admin) und `shared` (Bitmaske, Bit uid). Backups bleiben lesbar.
+- **Sichtbarkeit:** Admin alles; Benutzer sehen Codes, die sie besitzen oder die ihnen freigegeben sind (`codes_visible_to`). `GET /api/codes` liefert nur diese.
+- **Regeln (`code_rules()` in web_server.c, serverseitig):** Besitzer darf ändern, löschen, freigeben; Typ muss in seinen erlaubten Typen liegen, Türen in seiner Türmaske. Freigegebene Benutzer dürfen **voll bearbeiten, wenn der Admin ihnen `edit_shared` gegeben hat** (Entscheidung 29.10.2026: „voll bearbeiten, einstellbar über die Nutzerrechte“), sonst nur ein-/ausschalten. Freigaben vergibt nur der Besitzer (oder Admin), den Besitzer ändert nur der Admin, löschen darf nur Besitzer oder Admin. Kontingent `max_codes` wird beim Anlegen geprüft (507).
+- **Benutzer löschen:** Admin wählt `?codes=transfer` (Codes gehen an den handelnden Admin, Default) oder `?codes=delete`; Freigabe-Bits des Benutzers werden überall entfernt (`codes_user_removed`). Sperren lässt Codes unberührt.
+- **Türen öffnen per Web-UI:** Benutzer brauchen `open_doors` und die Tür in ihrer Türmaske (Entscheidung 29.10.2026: einstellbar durch den Admin). Admin-Seiten (Protokoll, Netzwerk, System, Zertifikat, Firmware, Token, Benutzer, Backup) liefern 403 für Benutzer; `/api/status` liefert ihnen nur Türen, Uhrzeit und eigene Code-Anzahl.
+- **Backup v3** enthält `users` mit Passwort-Hashes und 2FA-Daten (Entscheidung 29.10.2026), damit ein Ersatzgerät ohne neue Passwörter läuft; Admin-Passwort bleibt draußen. Restore ersetzt alle Benutzer und beendet deren Sessions. Werksreset löscht `users.json`.
+- **Protokoll:** Benutzer angelegt/geändert/gesperrt/gelöscht, Passwort-Reset, 2FA-Reset, Code angelegt/geändert/ein-/ausgeschaltet/gelöscht, jeweils mit Namen, nie mit Code.
+
+## 8c. Anlagen- und Betreuerinfo auf der Loginseite (umgesetzt 29.10.2026)
+
+- `settings_site_t { name[32], support_email[64], info_text[512] }` am Ende von `settings_t` → **`SETTINGS_VERSION` 4**. `settings_init()` übernimmt v3-Blobs als Präfix (neue Felder leer), der Testaufbau verliert keine Einstellungen.
+- `GET /api/session` liefert `site` **ohne Anmeldung**; Login-, 2FA- und Setup-Seite zeigen Anlagenname, Text (mehrzeilig, nur `textContent`, kein HTML) und E-Mail als Mailto-Link. Pflege in System → „Anlage und Betreuer“ (`POST /api/system {site}`), Warnhinweis, dass die Angaben öffentlich sind. Backup enthält `settings.site`.
+
+## 8d. Einmalcode mit Nutzungsfenster (umgesetzt 29.10.2026)
+
+- `grace_s` (0..`CFG_ONETIME_GRACE_MAX_S` = 600) je Einmalcode; `grace_until_us` nur im RAM (Laufzeituhr `esp_timer`). Erste gültige Eingabe startet das Fenster; solange es läuft, wird `max_uses` ignoriert, jede Eingabe zählt in `uses` und steht im Protokoll („erneut im Nutzungsfenster, noch n s“). Danach „Nutzungen aufgebraucht“.
+- **Laufzeituhr statt Wanduhr**, damit das Fenster ohne NTP funktioniert; Folge: **Neustart beendet ein laufendes Fenster** (fail-closed, Entscheidung 29.10.2026). Bearbeiten über PUT erhält das laufende Fenster (`codes_update` kopiert `grace_until_us`), Ausschalten/Löschen beendet es.
+- API: `grace_s` schreibbar, `grace_remaining_s` nur lesend; UI zeigt „Einmalcode (5 min)“ und einen laufenden Countdown, Auswahl 0/30 s/1/2/5/10 min oder freier Wert. Keine eigene Berechtigung: wer Einmalcodes anlegen darf, darf das Fenster setzen.
+
+---
+
 ## 9. Sicherheit (Web/Betrieb)
 
 - Erststart: Setup-Assistent erzwingt ein Admin-Passwort (kein Default-Passwort). Passwort-Hash PBKDF2-HMAC-SHA256 (mbedTLS), 100k Iterationen.
@@ -231,6 +265,7 @@ Speicherung: NVS-Namespace `codes`, bis ~200 Einträge, Codes im Klartext. Ehrli
 | 6 | Härtung + Tests: Rate-Limits, WDT, DST-Wechsel, IPv6-only-Netz, Zert-Rotation, Lasttest TLS, Doku | Rate-Limits, Werksreset per BOOT-Taster, Protokolldatei erledigt; Tests warten auf Hardware |
 | 7 | **2FA** (Entscheidung 24.10.2026): TOTP RFC 6238 + 8 Recovery-Codes, strenge Variante ohne synchrone Uhr, Einrichtung über Admin-Seite mit QR-Code, keine externe RTC | **Code fertig, kompiliert**; Test mit Authenticator-App offen |
 | 8 | **API-Token + mehrere Türen** (Entscheidung 24.10.2026, Abschnitt 8a): bis zu 4 Türen als Array in Settings und Codes, Relais-/Kontakt-/REX-Pins je Tür, ein Keypad fest einer Tür zugeordnet, Token-Verwaltung in der UI, `/api/v1/doors/<n>/open` mit Bearer-Token | **Code fertig, kompiliert, auf dem Board gebootet (24.10.2026)**: Settings v3, `codes.doors`, `door_relay` je Tür, Modul `api_tokens`, UI-Seiten „API“ und „Türen“, docs/api.md. Per curl gegen das Board getestet (24.10.2026): Türen aktivieren/umbenennen, Keypad-Zuordnung, Code mit Türmaske, Token anlegen/sperren/löschen, v1 Status und Öffnen (Tür 1 + 2), 403 bei fremder Tür, 401/403/404/429 inkl. Retry-After, Protokolleinträge, Backup v2, Werksreset. Offen: Browser-UI durchklicken, Home Assistant real, Relais an Tür 2–4 |
+| 9 | Benutzer (16 + Admin) mit Rollen/Rechten, Besitz und Freigabe von Codes, 2FA je Benutzer, Loginseiten-Infos (Settings v4), Einmalcode-Nutzungsfenster | **Code fertig, kompiliert (29.10.2026)**, Abschnitte 8b–8d; auf Hardware noch ungetestet |
 
 ### Umsetzungsstand 24.10.2026
 

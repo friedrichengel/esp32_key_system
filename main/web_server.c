@@ -21,6 +21,7 @@
 #include "settings.h"
 #include "event_log.h"
 #include "auth.h"
+#include "users.h"
 #include "cert_store.h"
 #include "net_eth.h"
 #include "time_sync.h"
@@ -46,7 +47,8 @@ static bool           s_tls;
 
 #define MAX_JSON_BODY   8192
 #define MAX_PEM_BODY    16384
-#define MAX_BACKUP_BODY 65536
+#define MAX_BACKUP_BODY 98304
+#define BACKUP_VERSION  3
 
 /* ========================================================================
  * Hilfsfunktionen
@@ -154,20 +156,39 @@ static void copy_str(char *dst, size_t dst_len, const char *src)
     strlcpy(dst, src ? src : "", dst_len);
 }
 
+/* Pfad ohne Query in buf kopieren */
+static void uri_path(const httpd_req_t *req, char *buf, size_t len)
+{
+    strlcpy(buf, req->uri, len);
+    char *q = strchr(buf, '?');
+    if (q) *q = '\0';
+}
+
 /* Letztes Pfadsegment als Zahl (für /api/codes/<id>), Query wird ignoriert */
 static uint32_t uri_last_id(const httpd_req_t *req)
 {
     char path[CONFIG_HTTPD_MAX_URI_LEN + 1];
-    strlcpy(path, req->uri, sizeof(path));
-    char *q = strchr(path, '?');
-    if (q) *q = '\0';
+    uri_path(req, path, sizeof(path));
     char *slash = strrchr(path, '/');
     return slash ? (uint32_t)strtoul(slash + 1, NULL, 10) : 0;
 }
 
+/* Query-Parameter lesen; false wenn nicht vorhanden */
+static bool uri_query(httpd_req_t *req, const char *key, char *out, size_t len)
+{
+    char query[96] = {0};
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK) return false;
+    return httpd_query_key_value(query, key, out, len) == ESP_OK;
+}
+
 /* ------------------------------------------------------------------------
- * Auth
+ * Auth: Session -> Principal (Rechte bei jedem Request frisch aus den Benutzerdaten)
  * ---------------------------------------------------------------------- */
+typedef struct {
+    auth_session_t  *s;
+    auth_principal_t p;
+} req_auth_t;
+
 static auth_session_t *get_session(httpd_req_t *req)
 {
     char token[AUTH_TOKEN_HEX_LEN + 1];
@@ -178,28 +199,62 @@ static auth_session_t *get_session(httpd_req_t *req)
     return auth_session_find(token);
 }
 
-static auth_session_t *require_auth(httpd_req_t *req)
+/* Mit Startpasswort sind nur Passwortwechsel und Abmelden erlaubt */
+static bool route_allowed_before_pw_change(const httpd_req_t *req)
 {
-    auth_session_t *s = get_session(req);
-    if (!s) {
-        send_error(req, "401 Unauthorized", "Nicht angemeldet");
-    }
-    return s;
+    char path[CONFIG_HTTPD_MAX_URI_LEN + 1];
+    uri_path(req, path, sizeof(path));
+    return strcmp(path, "/api/account/password") == 0 || strcmp(path, "/api/logout") == 0;
 }
 
-static auth_session_t *require_auth_csrf(httpd_req_t *req)
+static bool require_auth(httpd_req_t *req, req_auth_t *a)
 {
-    auth_session_t *s = require_auth(req);
-    if (!s) {
-        return NULL;
+    memset(a, 0, sizeof(*a));
+    a->s = get_session(req);
+    if (!a->s || !auth_session_principal(a->s, &a->p)) {
+        if (a->s) {
+            auth_session_destroy(a->s->token);     /* Benutzer gesperrt/gelöscht: Session beenden */
+            a->s = NULL;
+        }
+        send_error(req, "401 Unauthorized", "Nicht angemeldet");
+        return false;
     }
+    if (a->p.must_change_pw && !route_allowed_before_pw_change(req)) {
+        send_error(req, "403 Forbidden", "Bitte zuerst das Startpasswort aendern");
+        return false;
+    }
+    return true;
+}
+
+static bool check_csrf(httpd_req_t *req, const req_auth_t *a)
+{
     char csrf[AUTH_CSRF_HEX_LEN + 1] = {0};
     if (httpd_req_get_hdr_value_str(req, "X-CSRF-Token", csrf, sizeof(csrf)) != ESP_OK ||
-        strcmp(csrf, s->csrf) != 0) {
+        strcmp(csrf, a->s->csrf) != 0) {
         send_error(req, "403 Forbidden", "CSRF-Token fehlt oder ungueltig");
-        return NULL;
+        return false;
     }
-    return s;
+    return true;
+}
+
+static bool require_auth_csrf(httpd_req_t *req, req_auth_t *a)
+{
+    return require_auth(req, a) && check_csrf(req, a);
+}
+
+static bool require_admin(httpd_req_t *req, req_auth_t *a)
+{
+    if (!require_auth(req, a)) return false;
+    if (!a->p.is_admin) {
+        send_error(req, "403 Forbidden", "Nur fuer Administratoren");
+        return false;
+    }
+    return true;
+}
+
+static bool require_admin_csrf(httpd_req_t *req, req_auth_t *a)
+{
+    return require_admin(req, a) && check_csrf(req, a);
 }
 
 static void set_session_cookie(httpd_req_t *req, char *hdrbuf, size_t hdrlen, const char *token)
@@ -349,7 +404,7 @@ static void doors_from_json(const cJSON *j, settings_door_t doors[CFG_MAX_DOORS]
     }
 }
 
-/* Kurzliste der Türen (Name/aktiv) für Codes- und Token-Seite */
+/* Kurzliste der Türen (Name/aktiv) für Codes-, Token- und Benutzerseite */
 static cJSON *doors_brief_json(void)
 {
     cJSON *arr = cJSON_CreateArray();
@@ -447,6 +502,39 @@ static void keypad_from_json(const cJSON *k, settings_keypad_t *s)
     if (dn >= 1 && dn <= CFG_MAX_DOORS) s->door = (uint8_t)(dn - 1);
 }
 
+/* Anlagen-/Betreuerinfos für die Loginseite */
+static cJSON *site_to_json(const settings_site_t *s)
+{
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddStringToObject(o, "name", s->name);
+    cJSON_AddStringToObject(o, "support_email", s->support_email);
+    cJSON_AddStringToObject(o, "info_text", s->info_text);
+    return o;
+}
+
+static bool valid_email_or_empty(const char *e)
+{
+    if (!e[0]) return true;
+    const char *at = strchr(e, '@');
+    if (!at || at == e || !at[1] || strchr(at + 1, '@')) return false;
+    for (const char *p = e; *p; p++) {
+        if ((unsigned char)*p <= 0x20 || *p == '<' || *p == '>' || *p == '"') return false;
+    }
+    return strchr(at + 1, '.') != NULL;
+}
+
+static const char *site_from_json(const cJSON *j, settings_site_t *s)
+{
+    if (strlen(jstr(j, "name", "")) >= sizeof(s->name)) return "Anlagenname zu lang (max. 31 Zeichen)";
+    if (strlen(jstr(j, "support_email", "")) >= sizeof(s->support_email)) return "E-Mail zu lang (max. 63 Zeichen)";
+    if (strlen(jstr(j, "info_text", "")) >= sizeof(s->info_text)) return "Infotext zu lang (max. 511 Zeichen)";
+    copy_str(s->name, sizeof(s->name), jstr(j, "name", s->name));
+    copy_str(s->support_email, sizeof(s->support_email), jstr(j, "support_email", s->support_email));
+    copy_str(s->info_text, sizeof(s->info_text), jstr(j, "info_text", s->info_text));
+    if (!valid_email_or_empty(s->support_email)) return "E-Mail-Adresse ungueltig";
+    return NULL;
+}
+
 /* ========================================================================
  * Statische Dateien
  * ====================================================================== */
@@ -480,31 +568,49 @@ static esp_err_t h_qrcode_js(httpd_req_t *req)
 /* ========================================================================
  * API: Session / Login / Setup
  * ====================================================================== */
+/* Felder des angemeldeten Benutzers (Session-Antwort und Login-Antwort) */
+static void principal_to_json(cJSON *o, const auth_session_t *s, const auth_principal_t *p)
+{
+    cJSON_AddStringToObject(o, "user", p->name);
+    cJSON_AddNumberToObject(o, "uid", p->uid);
+    cJSON_AddStringToObject(o, "role", p->is_admin ? "admin" : "user");
+    cJSON_AddStringToObject(o, "csrf", s->csrf);
+    cJSON_AddBoolToObject(o, "twofa_enabled", auth_twofa_enabled(p->uid));
+    cJSON_AddNumberToObject(o, "code_types", p->code_types);
+    cJSON_AddNumberToObject(o, "doors", p->doors);
+    cJSON *perms = cJSON_AddObjectToObject(o, "perms");
+    cJSON_AddBoolToObject(perms, "edit_shared", (p->perms & USER_PERM_EDIT_SHARED) != 0);
+    cJSON_AddBoolToObject(perms, "open_doors", (p->perms & USER_PERM_OPEN_DOORS) != 0);
+    cJSON_AddNumberToObject(o, "max_codes", p->max_codes);
+    cJSON_AddBoolToObject(o, "must_change_pw", p->must_change_pw);
+}
+
 static esp_err_t h_session_get(httpd_req_t *req)
 {
     auth_session_t *s = get_session(req);
+    auth_principal_t p;
+    bool ok = s && auth_session_principal(s, &p);
     cJSON *o = cJSON_CreateObject();
-    cJSON_AddBoolToObject(o, "authenticated", s != NULL);
+    cJSON_AddBoolToObject(o, "authenticated", ok);
     cJSON_AddBoolToObject(o, "setup_required", auth_setup_required());
     cJSON_AddBoolToObject(o, "tls", s_tls);
     cJSON_AddStringToObject(o, "hostname", g_settings.net.hostname);
-    cJSON_AddBoolToObject(o, "twofa_enabled", auth_twofa_enabled());
-    if (s) {
-        cJSON_AddStringToObject(o, "user", s->user);
-        cJSON_AddStringToObject(o, "csrf", s->csrf);
+    cJSON_AddItemToObject(o, "site", site_to_json(&g_settings.site));   /* ohne Login sichtbar */
+    if (ok) {
+        principal_to_json(o, s, &p);
     }
     return send_json(req, o);
 }
 
-static esp_err_t finish_login(httpd_req_t *req, const char *user)
+static esp_err_t finish_login(httpd_req_t *req, const auth_principal_t *p)
 {
-    auth_session_t *s = auth_session_create(user);
+    auth_session_t *s = auth_session_create(p);
+    if (p->uid != AUTH_UID_ADMIN) users_touch_login(p->uid);
     char cookie[160];
     set_session_cookie(req, cookie, sizeof(cookie), s->token);
     cJSON *o = cJSON_CreateObject();
     cJSON_AddBoolToObject(o, "ok", true);
-    cJSON_AddStringToObject(o, "user", s->user);
-    cJSON_AddStringToObject(o, "csrf", s->csrf);
+    principal_to_json(o, s, p);
     return send_json(req, o);
 }
 
@@ -519,11 +625,14 @@ static esp_err_t h_setup_post(httpd_req_t *req)
     const char *pw = jstr(j, "password", "");
     esp_err_t err = auth_set_password(user, pw);
     cJSON_Delete(j);
+    if (err == ESP_ERR_INVALID_STATE) return send_error(req, "409 Conflict", "Name ist bereits vergeben");
     if (err != ESP_OK) {
-        return send_error(req, "400 Bad Request", "Passwort muss mindestens 8 Zeichen haben");
+        return send_error(req, "400 Bad Request", "Benutzername ungueltig oder Passwort kuerzer als 8 Zeichen");
     }
     event_log(EV_LOGIN, "Ersteinrichtung abgeschlossen, Admin '%s'", g_settings.admin.user);
-    return finish_login(req, g_settings.admin.user);
+    auth_principal_t p;
+    auth_principal_load(AUTH_UID_ADMIN, &p);
+    return finish_login(req, &p);
 }
 
 static esp_err_t h_login_post(httpd_req_t *req)
@@ -536,32 +645,36 @@ static esp_err_t h_login_post(httpd_req_t *req)
     }
     cJSON *j = read_json(req);
     if (!j) return send_error(req, "400 Bad Request", "JSON erwartet");
-    const char *user = jstr(j, "user", "");
-    const char *pw = jstr(j, "password", "");
-    bool ok = auth_verify_password(user, pw);
-    char user_copy[32];
-    copy_str(user_copy, sizeof(user_copy), user);
+    char user_copy[AUTH_NAME_LEN];
+    copy_str(user_copy, sizeof(user_copy), jstr(j, "user", ""));
+    auth_principal_t p;
+    auth_login_result_t r = auth_login_check(user_copy, jstr(j, "password", ""), &p);
     cJSON_Delete(j);
 
-    if (!ok) {
+    if (r == LOGIN_DISABLED) {
+        event_log(EV_LOGIN, "Login fuer gesperrten Benutzer '%s' abgelehnt", user_copy);
+        vTaskDelay(pdMS_TO_TICKS(500));
+        return send_error(req, "403 Forbidden", "Benutzer ist gesperrt, bitte an den Systembetreuer wenden");
+    }
+    if (r != LOGIN_OK) {
         auth_login_failed();
         event_log(EV_LOGIN, "Login fehlgeschlagen fuer '%s'", user_copy);
         vTaskDelay(pdMS_TO_TICKS(500));
         return send_error(req, "401 Unauthorized", "Benutzer oder Passwort falsch");
     }
-    if (auth_twofa_enabled()) {
+    if (auth_twofa_enabled(p.uid)) {
         /* Passwort stimmt, zweiter Faktor fehlt noch: Ticket statt Session */
-        const char *ticket = auth_preauth_create(user_copy);
+        const char *ticket = auth_preauth_create(&p);
         cJSON *o = cJSON_CreateObject();
         cJSON_AddBoolToObject(o, "twofa_required", true);
         cJSON_AddStringToObject(o, "ticket", ticket);
         cJSON_AddBoolToObject(o, "time_valid", time_sync_is_valid());
-        cJSON_AddNumberToObject(o, "recovery_remaining", auth_twofa_recovery_remaining());
+        cJSON_AddNumberToObject(o, "recovery_remaining", auth_twofa_recovery_remaining(p.uid));
         return send_json(req, o);
     }
     auth_login_succeeded();
-    event_log(EV_LOGIN, "Login '%s'", user_copy);
-    return finish_login(req, user_copy);
+    event_log(EV_LOGIN, "Login '%s'%s", p.name, p.is_admin ? "" : " (Benutzer)");
+    return finish_login(req, &p);
 }
 
 static const char *twofa_error_text(twofa_result_t r)
@@ -585,38 +698,88 @@ static esp_err_t h_login_2fa_post(httpd_req_t *req)
     }
     cJSON *j = read_json(req);
     if (!j) return send_error(req, "400 Bad Request", "JSON erwartet");
-    char ticket[AUTH_TICKET_HEX_LEN + 1], code[32], user[32];
+    char ticket[AUTH_TICKET_HEX_LEN + 1], code[32];
     copy_str(ticket, sizeof(ticket), jstr(j, "ticket", ""));
     copy_str(code, sizeof(code), jstr(j, "code", ""));
     cJSON_Delete(j);
 
-    if (!auth_preauth_check(ticket, user, sizeof(user))) {
+    auth_principal_t p;
+    if (!auth_preauth_check(ticket, &p)) {
         return send_error(req, "401 Unauthorized", "Anmeldung abgelaufen, bitte Passwort erneut eingeben");
     }
     bool used_recovery = false;
-    twofa_result_t r = auth_twofa_verify(code, &used_recovery);
+    twofa_result_t r = auth_twofa_verify(p.uid, code, &used_recovery);
     if (r != TWOFA_OK) {
         auth_login_failed();
-        event_log(EV_LOGIN, "2FA fehlgeschlagen fuer '%s': %s", user, twofa_error_text(r));
+        event_log(EV_LOGIN, "2FA fehlgeschlagen fuer '%s': %s", p.name, twofa_error_text(r));
         vTaskDelay(pdMS_TO_TICKS(500));
         return send_error(req, "401 Unauthorized", twofa_error_text(r));
     }
     auth_preauth_consume(ticket);
     auth_login_succeeded();
-    event_log(EV_LOGIN, "Login '%s' mit 2FA (%s)", user, used_recovery ? "Recovery-Code" : "TOTP");
-    return finish_login(req, user);
+    event_log(EV_LOGIN, "Login '%s' mit 2FA (%s)", p.name, used_recovery ? "Recovery-Code" : "TOTP");
+    return finish_login(req, &p);
+}
+
+static esp_err_t h_logout_post(httpd_req_t *req)
+{
+    char token[AUTH_TOKEN_HEX_LEN + 1];
+    size_t len = sizeof(token);
+    if (httpd_req_get_cookie_val(req, AUTH_COOKIE_NAME, token, &len) == ESP_OK) {
+        auth_session_destroy(token);
+    }
+    char cookie[160];
+    set_session_cookie(req, cookie, sizeof(cookie), NULL);
+    return send_ok(req);
 }
 
 /* ========================================================================
- * API: 2FA-Verwaltung (angemeldet, Passwort erneut erforderlich)
+ * API: Eigenes Konto (jeder Benutzer)
+ * ====================================================================== */
+/* {old_password, new_password}: Passwort des angemeldeten Benutzers; alle seine Sessions enden */
+static esp_err_t h_account_password_post(httpd_req_t *req)
+{
+    req_auth_t a;
+    if (!require_auth_csrf(req, &a)) return ESP_OK;
+    cJSON *j = read_json(req);
+    if (!j) return send_error(req, "400 Bad Request", "JSON erwartet");
+    const char *old = jstr(j, "old_password", "");
+    const char *nw = jstr(j, "new_password", "");
+    if (!auth_verify_principal_password(&a.p, old)) {
+        cJSON_Delete(j);
+        vTaskDelay(pdMS_TO_TICKS(300));
+        return send_error(req, "403 Forbidden", "Altes Passwort falsch");
+    }
+    if (strlen(nw) < AUTH_PW_MIN_LEN) {
+        cJSON_Delete(j);
+        return send_error(req, "400 Bad Request", "Neues Passwort muss mindestens 8 Zeichen haben");
+    }
+    if (strcmp(old, nw) == 0) {
+        cJSON_Delete(j);
+        return send_error(req, "400 Bad Request", "Neues Passwort muss sich vom alten unterscheiden");
+    }
+    esp_err_t err = (a.p.uid == AUTH_UID_ADMIN) ? auth_set_password(a.p.name, nw)
+                                                : users_set_password(a.p.uid, nw, false);
+    cJSON_Delete(j);
+    if (err != ESP_OK) return send_error(req, "500 Internal Server Error", "Speichern fehlgeschlagen");
+    auth_sessions_destroy_uid(a.p.uid);
+    event_log(EV_CONFIG, "Passwort geaendert von '%s'", a.p.name);
+    char cookie[160];
+    set_session_cookie(req, cookie, sizeof(cookie), NULL);
+    return send_ok(req);
+}
+
+/* ========================================================================
+ * API: 2FA-Verwaltung des angemeldeten Benutzers (Passwort erneut erforderlich)
  * ====================================================================== */
 static esp_err_t h_twofa_get(httpd_req_t *req)
 {
-    if (!require_auth(req)) return ESP_OK;
+    req_auth_t a;
+    if (!require_auth(req, &a)) return ESP_OK;
     cJSON *o = cJSON_CreateObject();
-    cJSON_AddBoolToObject(o, "enabled", auth_twofa_enabled());
+    cJSON_AddBoolToObject(o, "enabled", auth_twofa_enabled(a.p.uid));
     cJSON_AddBoolToObject(o, "time_valid", time_sync_is_valid());
-    cJSON_AddNumberToObject(o, "recovery_remaining", auth_twofa_recovery_remaining());
+    cJSON_AddNumberToObject(o, "recovery_remaining", auth_twofa_recovery_remaining(a.p.uid));
     cJSON_AddNumberToObject(o, "recovery_total", SETTINGS_RECOVERY_COUNT);
     cJSON_AddStringToObject(o, "issuer", CFG_TWOFA_ISSUER);
     return send_json(req, o);
@@ -633,25 +796,25 @@ static void add_recovery_array(cJSON *o, char recovery[SETTINGS_RECOVERY_COUNT][
 /* Einrichtung starten: {password} -> Geheimnis, otpauth-URI, Recovery-Codes (einmalig sichtbar) */
 static esp_err_t h_twofa_setup_post(httpd_req_t *req)
 {
-    auth_session_t *s = require_auth_csrf(req);
-    if (!s) return ESP_OK;
+    req_auth_t a;
+    if (!require_auth_csrf(req, &a)) return ESP_OK;
     if (!time_sync_is_valid()) {
         return send_error(req, "409 Conflict", "Uhrzeit nicht synchron: 2FA kann erst eingerichtet werden, wenn NTP die Zeit gesetzt hat");
     }
     cJSON *j = read_json(req);
     if (!j) return send_error(req, "400 Bad Request", "JSON erwartet");
-    bool pw_ok = auth_verify_password(g_settings.admin.user, jstr(j, "password", ""));
+    bool pw_ok = auth_verify_principal_password(&a.p, jstr(j, "password", ""));
     cJSON_Delete(j);
     if (!pw_ok) return send_error(req, "403 Forbidden", "Passwort falsch");
 
     char secret[AUTH_B32_SECRET_LEN];
     char recovery[SETTINGS_RECOVERY_COUNT][AUTH_RECOVERY_LEN + 1];
-    if (auth_twofa_begin_setup(secret, recovery) != ESP_OK) {
+    if (auth_twofa_begin_setup(a.p.uid, secret, recovery) != ESP_OK) {
         return send_error(req, "500 Internal Server Error", "Einrichtung fehlgeschlagen");
     }
     char uri[256];
     snprintf(uri, sizeof(uri), "otpauth://totp/%s:%s@%s?secret=%s&issuer=%s&algorithm=SHA1&digits=6&period=30",
-             CFG_TWOFA_ISSUER, s->user, g_settings.net.hostname, secret, CFG_TWOFA_ISSUER);
+             CFG_TWOFA_ISSUER, a.p.name, g_settings.net.hostname, secret, CFG_TWOFA_ISSUER);
     cJSON *o = cJSON_CreateObject();
     cJSON_AddStringToObject(o, "secret", secret);
     cJSON_AddStringToObject(o, "otpauth", uri);
@@ -662,88 +825,82 @@ static esp_err_t h_twofa_setup_post(httpd_req_t *req)
 
 static esp_err_t h_twofa_confirm_post(httpd_req_t *req)
 {
-    if (!require_auth_csrf(req)) return ESP_OK;
+    req_auth_t a;
+    if (!require_auth_csrf(req, &a)) return ESP_OK;
     cJSON *j = read_json(req);
     if (!j) return send_error(req, "400 Bad Request", "JSON erwartet");
     char code[16];
     copy_str(code, sizeof(code), jstr(j, "code", ""));
     cJSON_Delete(j);
-    esp_err_t err = auth_twofa_confirm_setup(code);
+    esp_err_t err = auth_twofa_confirm_setup(a.p.uid, code);
     if (err == ESP_ERR_INVALID_STATE)    return send_error(req, "409 Conflict", "Keine Einrichtung aktiv oder abgelaufen, bitte neu starten");
     if (err == ESP_ERR_INVALID_RESPONSE) return send_error(req, "409 Conflict", "Uhrzeit nicht synchron");
     if (err == ESP_ERR_INVALID_ARG)      return send_error(req, "400 Bad Request", "Code stimmt nicht, bitte den aktuellen Code aus der App eingeben");
     if (err != ESP_OK)                   return send_error(req, "500 Internal Server Error", "Speichern fehlgeschlagen");
+    event_log(EV_CONFIG, "Zwei-Faktor-Authentifizierung (TOTP) aktiviert fuer '%s'", a.p.name);
     return send_ok(req);
 }
 
 static esp_err_t h_twofa_cancel_post(httpd_req_t *req)
 {
-    if (!require_auth_csrf(req)) return ESP_OK;
-    auth_twofa_cancel_setup();
+    req_auth_t a;
+    if (!require_auth_csrf(req, &a)) return ESP_OK;
+    auth_twofa_cancel_setup(a.p.uid);
     return send_ok(req);
 }
 
 /* Passwort + gültiger zweiter Faktor (TOTP oder Recovery) für Deaktivieren/Neuerzeugen */
-static bool twofa_reauth(httpd_req_t *req, cJSON *j, const char **err_status, const char **err_msg)
+static bool twofa_reauth(const req_auth_t *a, cJSON *j, const char **err_status, const char **err_msg)
 {
-    if (!auth_verify_password(g_settings.admin.user, jstr(j, "password", ""))) {
+    if (!auth_verify_principal_password(&a->p, jstr(j, "password", ""))) {
         *err_status = "403 Forbidden"; *err_msg = "Passwort falsch";
         return false;
     }
     bool used_recovery = false;
-    twofa_result_t r = auth_twofa_verify(jstr(j, "code", ""), &used_recovery);
+    twofa_result_t r = auth_twofa_verify(a->p.uid, jstr(j, "code", ""), &used_recovery);
     if (r != TWOFA_OK) {
         *err_status = "403 Forbidden"; *err_msg = twofa_error_text(r);
         return false;
     }
-    (void)req;
     return true;
 }
 
 static esp_err_t h_twofa_disable_post(httpd_req_t *req)
 {
-    if (!require_auth_csrf(req)) return ESP_OK;
-    if (!auth_twofa_enabled()) return send_error(req, "409 Conflict", "2FA ist nicht aktiv");
+    req_auth_t a;
+    if (!require_auth_csrf(req, &a)) return ESP_OK;
+    if (!auth_twofa_enabled(a.p.uid)) return send_error(req, "409 Conflict", "2FA ist nicht aktiv");
     cJSON *j = read_json(req);
     if (!j) return send_error(req, "400 Bad Request", "JSON erwartet");
     const char *st, *msg;
-    bool ok = twofa_reauth(req, j, &st, &msg);
+    bool ok = twofa_reauth(&a, j, &st, &msg);
     cJSON_Delete(j);
     if (!ok) return send_error(req, st, msg);
-    auth_twofa_disable();
+    auth_twofa_disable(a.p.uid);
+    event_log(EV_CONFIG, "Zwei-Faktor-Authentifizierung deaktiviert fuer '%s'", a.p.name);
     return send_ok(req);
 }
 
 static esp_err_t h_twofa_recovery_post(httpd_req_t *req)
 {
-    if (!require_auth_csrf(req)) return ESP_OK;
-    if (!auth_twofa_enabled()) return send_error(req, "409 Conflict", "2FA ist nicht aktiv");
+    req_auth_t a;
+    if (!require_auth_csrf(req, &a)) return ESP_OK;
+    if (!auth_twofa_enabled(a.p.uid)) return send_error(req, "409 Conflict", "2FA ist nicht aktiv");
     cJSON *j = read_json(req);
     if (!j) return send_error(req, "400 Bad Request", "JSON erwartet");
     const char *st, *msg;
-    bool ok = twofa_reauth(req, j, &st, &msg);
+    bool ok = twofa_reauth(&a, j, &st, &msg);
     cJSON_Delete(j);
     if (!ok) return send_error(req, st, msg);
     char recovery[SETTINGS_RECOVERY_COUNT][AUTH_RECOVERY_LEN + 1];
-    if (auth_twofa_regenerate_recovery(recovery) != ESP_OK) {
+    if (auth_twofa_regenerate_recovery(a.p.uid, recovery) != ESP_OK) {
         return send_error(req, "500 Internal Server Error", "Speichern fehlgeschlagen");
     }
+    event_log(EV_CONFIG, "Recovery-Codes neu erzeugt fuer '%s'", a.p.name);
     cJSON *o = cJSON_CreateObject();
     cJSON_AddBoolToObject(o, "ok", true);
     add_recovery_array(o, recovery);
     return send_json(req, o);
-}
-
-static esp_err_t h_logout_post(httpd_req_t *req)
-{
-    char token[AUTH_TOKEN_HEX_LEN + 1];
-    size_t len = sizeof(token);
-    if (httpd_req_get_cookie_val(req, AUTH_COOKIE_NAME, token, &len) == ESP_OK) {
-        auth_session_destroy(token);
-    }
-    char cookie[160];
-    set_session_cookie(req, cookie, sizeof(cookie), NULL);
-    return send_ok(req);
 }
 
 /* ========================================================================
@@ -751,24 +908,43 @@ static esp_err_t h_logout_post(httpd_req_t *req)
  * ====================================================================== */
 static esp_err_t h_status_get(httpd_req_t *req)
 {
-    if (!require_auth(req)) return ESP_OK;
+    req_auth_t a;
+    if (!require_auth(req, &a)) return ESP_OK;
+
+    const esp_app_desc_t *app = esp_app_get_description();
+    char tbuf[24];
+    time_sync_format_local(time(NULL), tbuf, sizeof(tbuf));
+    uint32_t lock_rem = 0;
+    bool locked = access_keypad_locked(&lock_rem);
+
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddBoolToObject(o, "admin", a.p.is_admin);
+    cJSON *fw = cJSON_AddObjectToObject(o, "firmware");
+    cJSON_AddStringToObject(fw, "version", app->version);
+    cJSON *sys = cJSON_AddObjectToObject(o, "system");
+    cJSON_AddNumberToObject(sys, "uptime_s", (double)(esp_timer_get_time() / 1000000));
+    cJSON_AddStringToObject(sys, "time", tbuf);
+    cJSON_AddBoolToObject(sys, "time_valid", time_sync_is_valid());
+    cJSON_AddBoolToObject(sys, "tls", s_tls);
+    cJSON *kp = cJSON_AddObjectToObject(o, "keypad");
+    cJSON_AddNumberToObject(kp, "door", access_keypad_door() + 1);
+    cJSON_AddBoolToObject(kp, "locked", locked);
+    cJSON_AddNumberToObject(kp, "lock_remaining_s", lock_rem);
+    cJSON_AddItemToObject(o, "doors", doors_status_json());
+
+    if (!a.p.is_admin) {
+        /* Benutzer sehen nur Türen, Uhrzeit und ihre eigene Code-Anzahl */
+        cJSON_AddNumberToObject(o, "codes_count", codes_count_owned(a.p.uid));
+        return send_json(req, o);
+    }
 
     net_status_t ns;
     net_eth_get_status(&ns);
-    const esp_app_desc_t *app = esp_app_get_description();
     const esp_partition_t *part = esp_ota_get_running_partition();
-    char tbuf[24];
-    time_sync_format_local(time(NULL), tbuf, sizeof(tbuf));
-
-    cJSON *o = cJSON_CreateObject();
-    cJSON *fw = cJSON_AddObjectToObject(o, "firmware");
-    cJSON_AddStringToObject(fw, "version", app->version);
     cJSON_AddStringToObject(fw, "idf", app->idf_ver);
     cJSON_AddStringToObject(fw, "built", app->date);
     cJSON_AddStringToObject(fw, "partition", part ? part->label : "?");
 
-    cJSON *sys = cJSON_AddObjectToObject(o, "system");
-    cJSON_AddNumberToObject(sys, "uptime_s", (double)(esp_timer_get_time() / 1000000));
     cJSON_AddNumberToObject(sys, "heap_free", esp_get_free_heap_size());
     cJSON_AddNumberToObject(sys, "heap_min", esp_get_minimum_free_heap_size());
     cJSON_AddNumberToObject(sys, "psram_free", heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
@@ -776,10 +952,7 @@ static esp_err_t h_status_get(httpd_req_t *req)
     storage_usage(&fs_total, &fs_used);
     cJSON_AddNumberToObject(sys, "fs_total", fs_total);
     cJSON_AddNumberToObject(sys, "fs_used", fs_used);
-    cJSON_AddStringToObject(sys, "time", tbuf);
-    cJSON_AddBoolToObject(sys, "time_valid", time_sync_is_valid());
     cJSON_AddNumberToObject(sys, "last_sync", (double)time_sync_last_sync());
-    cJSON_AddBoolToObject(sys, "tls", s_tls);
 
     cJSON *net = cJSON_AddObjectToObject(o, "network");
     char mac[18];
@@ -803,34 +976,30 @@ static esp_err_t h_status_get(httpd_req_t *req)
         cJSON_AddItemToArray(ip6, cJSON_CreateString(ns.ip6[i]));
     }
 
-    uint32_t lock_rem = 0;
-    bool locked = access_keypad_locked(&lock_rem);
-    cJSON *kp = cJSON_AddObjectToObject(o, "keypad");
-    cJSON_AddNumberToObject(kp, "door", access_keypad_door() + 1);
-    cJSON_AddBoolToObject(kp, "locked", locked);
-    cJSON_AddNumberToObject(kp, "lock_remaining_s", lock_rem);
     cJSON_AddNumberToObject(kp, "fail_count", access_fail_count());
     cJSON_AddNumberToObject(kp, "rx_count", keypad_rx_count());
     cJSON_AddNumberToObject(kp, "last_rx_uptime_s", (double)keypad_last_rx_uptime_s());
     cJSON_AddBoolToObject(kp, "learn_mode", g_settings.keypad.learn_mode);
-    cJSON_AddItemToObject(o, "doors", doors_status_json());
     cJSON_AddNumberToObject(o, "codes_count", codes_count());
     cJSON_AddNumberToObject(o, "tokens_count", api_tokens_count());
+    cJSON_AddNumberToObject(o, "users_count", users_count());
     return send_json(req, o);
 }
 
 /* ========================================================================
- * API: Netzwerk
+ * API: Netzwerk (Admin)
  * ====================================================================== */
 static esp_err_t h_network_get(httpd_req_t *req)
 {
-    if (!require_auth(req)) return ESP_OK;
+    req_auth_t a;
+    if (!require_admin(req, &a)) return ESP_OK;
     return send_json(req, net_to_json(&g_settings.net));
 }
 
 static esp_err_t h_network_post(httpd_req_t *req)
 {
-    if (!require_auth_csrf(req)) return ESP_OK;
+    req_auth_t a;
+    if (!require_admin_csrf(req, &a)) return ESP_OK;
     cJSON *j = read_json(req);
     if (!j) return send_error(req, "400 Bad Request", "JSON erwartet");
     settings_network_t n = g_settings.net;
@@ -847,11 +1016,12 @@ static esp_err_t h_network_post(httpd_req_t *req)
 }
 
 /* ========================================================================
- * API: Zertifikat
+ * API: Zertifikat (Admin; Download auch für Benutzer, das Zertifikat ist öffentlich)
  * ====================================================================== */
 static esp_err_t h_cert_get(httpd_req_t *req)
 {
-    if (!require_auth(req)) return ESP_OK;
+    req_auth_t a;
+    if (!require_admin(req, &a)) return ESP_OK;
     cert_info_t ci;
     esp_err_t err = cert_store_get_info(&ci);
     cJSON *o = cJSON_CreateObject();
@@ -875,7 +1045,8 @@ static esp_err_t h_cert_get(httpd_req_t *req)
 
 static esp_err_t h_cert_download(httpd_req_t *req)
 {
-    if (!require_auth(req)) return ESP_OK;
+    req_auth_t a;
+    if (!require_auth(req, &a)) return ESP_OK;
     size_t len = 0;
     const char *pem = cert_store_cert_pem(&len);
     if (!pem) return send_error(req, "404 Not Found", "Kein Zertifikat");
@@ -886,10 +1057,10 @@ static esp_err_t h_cert_download(httpd_req_t *req)
 
 static esp_err_t h_cert_upload(httpd_req_t *req)
 {
-    if (!require_auth_csrf(req)) return ESP_OK;
-    char query[32] = {0}, type[8] = {0};
-    httpd_req_get_url_query_str(req, query, sizeof(query));
-    httpd_query_key_value(query, "type", type, sizeof(type));
+    req_auth_t a;
+    if (!require_admin_csrf(req, &a)) return ESP_OK;
+    char type[8] = {0};
+    uri_query(req, "type", type, sizeof(type));
 
     size_t len = 0;
     char *pem = read_body(req, MAX_PEM_BODY, &len);
@@ -911,24 +1082,24 @@ static esp_err_t h_cert_upload(httpd_req_t *req)
 
 static esp_err_t h_cert_regenerate(httpd_req_t *req)
 {
-    if (!require_auth_csrf(req)) return ESP_OK;
+    req_auth_t a;
+    if (!require_admin_csrf(req, &a)) return ESP_OK;
     cert_store_delete();
     return send_ok_reboot(req);
 }
 
 /* ========================================================================
- * API: Protokoll
+ * API: Protokoll (Admin)
  * ====================================================================== */
 static esp_err_t h_log_get(httpd_req_t *req)
 {
-    if (!require_auth(req)) return ESP_OK;
-    char query[64] = {0}, val[16] = {0};
+    req_auth_t a;
+    if (!require_admin(req, &a)) return ESP_OK;
+    char val[16] = {0};
     uint32_t after = 0;
     int max = 100;
-    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
-        if (httpd_query_key_value(query, "after", val, sizeof(val)) == ESP_OK) after = strtoul(val, NULL, 10);
-        if (httpd_query_key_value(query, "max", val, sizeof(val)) == ESP_OK) max = atoi(val);
-    }
+    if (uri_query(req, "after", val, sizeof(val))) after = strtoul(val, NULL, 10);
+    if (uri_query(req, "max", val, sizeof(val))) max = atoi(val);
     if (max < 1) max = 1;
     if (max > 200) max = 200;
 
@@ -953,16 +1124,47 @@ static esp_err_t h_log_get(httpd_req_t *req)
 }
 
 /* ========================================================================
- * API: Codes
+ * API: Codes (Besitz, Freigabe, Rechte – PLAN.md §8b)
  * ====================================================================== */
+/* Kurzliste aller Benutzer (uid, Name) für Freigabe-Dialog und Besitzer-Spalte */
+static cJSON *users_brief_json(void)
+{
+    cJSON *arr = cJSON_CreateArray();
+    cJSON *adm = cJSON_CreateObject();
+    cJSON_AddNumberToObject(adm, "uid", AUTH_UID_ADMIN);
+    cJSON_AddStringToObject(adm, "name", g_settings.admin.user);
+    cJSON_AddBoolToObject(adm, "enabled", true);
+    cJSON_AddBoolToObject(adm, "admin", true);
+    cJSON_AddItemToArray(arr, adm);
+    user_t *list = malloc(sizeof(user_t) * CFG_USERS_MAX);
+    if (list) {
+        size_t n = users_list(list, CFG_USERS_MAX);
+        for (size_t i = 0; i < n; i++) {
+            cJSON *u = cJSON_CreateObject();
+            cJSON_AddNumberToObject(u, "uid", list[i].uid);
+            cJSON_AddStringToObject(u, "name", list[i].name);
+            cJSON_AddBoolToObject(u, "enabled", list[i].enabled);
+            cJSON_AddBoolToObject(u, "admin", list[i].role == USER_ROLE_ADMIN);
+            cJSON_AddItemToArray(arr, u);
+        }
+        free(list);
+    }
+    return arr;
+}
+
 static esp_err_t h_codes_get(httpd_req_t *req)
 {
-    if (!require_auth(req)) return ESP_OK;
+    req_auth_t a;
+    if (!require_auth(req, &a)) return ESP_OK;
     cJSON *o = cJSON_CreateObject();
-    cJSON_AddItemToObject(o, "codes", codes_to_json());
+    cJSON_AddItemToObject(o, "codes", codes_to_json_for(a.p.uid, a.p.is_admin));
     cJSON_AddNumberToObject(o, "max", CFG_CODES_MAX);
+    cJSON_AddNumberToObject(o, "total", codes_count());
+    cJSON_AddNumberToObject(o, "owned", codes_count_owned(a.p.uid));
+    cJSON_AddNumberToObject(o, "grace_max_s", CFG_ONETIME_GRACE_MAX_S);
     cJSON_AddBoolToObject(o, "time_valid", time_sync_is_valid());
     cJSON_AddItemToObject(o, "doors", doors_brief_json());
+    cJSON_AddItemToObject(o, "users", users_brief_json());
     return send_json(req, o);
 }
 
@@ -978,20 +1180,64 @@ static esp_err_t codes_err_response(httpd_req_t *req, esp_err_t err)
     }
 }
 
+static bool owner_exists(uint8_t uid)
+{
+    if (uid == AUTH_UID_ADMIN) return true;
+    user_t u;
+    return users_get(uid, &u);
+}
+
+/* Regeln für Anlegen/Ändern durch Principal p; before = bestehender Eintrag (NULL bei POST).
+ * Passt e an (Besitzer, Freigaben) oder liefert einen Fehlertext (403). */
+static const char *code_rules(const auth_principal_t *p, const code_entry_t *before, code_entry_t *e)
+{
+    if (p->is_admin) {
+        if (!owner_exists(e->owner_uid)) return "Besitzer existiert nicht";
+        return NULL;
+    }
+    bool owner = before ? (before->owner_uid == p->uid) : true;
+    bool shared = before && (before->shared & USERS_UID_BIT(p->uid));
+    if (before && !owner && !shared) return "Kein Zugriff auf diesen Code";
+    if (before && !owner && !(p->perms & USER_PERM_EDIT_SHARED)) {
+        /* Nur sehen und ein-/ausschalten */
+        bool enabled = e->enabled;
+        *e = *before;
+        e->enabled = enabled;
+        return NULL;
+    }
+    e->owner_uid = before ? before->owner_uid : p->uid;
+    if (!owner) e->shared = before->shared;                 /* Freigaben vergibt nur der Besitzer */
+    e->shared &= ~USERS_UID_BIT(p->uid);                     /* sich selbst freigeben ist sinnlos */
+    if (!(p->code_types & CODE_TYPE_BIT(e->type))) return "Dieser Code-Typ ist fuer dich nicht freigegeben";
+    if (e->doors & ~p->doors) return "Mindestens eine gewaehlte Tuer ist fuer dich nicht freigegeben";
+    return NULL;
+}
+
+static void log_code_change(const char *what, const code_entry_t *e, const auth_principal_t *p)
+{
+    event_log(EV_CONFIG, "Code '%s' (#%" PRIu32 ", %s%s) %s von %s", e->name, e->id, codes_type_name(e->type),
+              e->shared ? ", freigegeben" : "", what, p->name);
+}
+
 static esp_err_t h_codes_post(httpd_req_t *req)
 {
-    auth_session_t *s = require_auth_csrf(req);
-    if (!s) return ESP_OK;
+    req_auth_t a;
+    if (!require_auth_csrf(req, &a)) return ESP_OK;
     cJSON *j = read_json(req);
     if (!j) return send_error(req, "400 Bad Request", "JSON erwartet");
     code_entry_t e;
     bool ok = codes_entry_from_json(j, &e);
     cJSON_Delete(j);
     if (!ok) return codes_err_response(req, ESP_ERR_INVALID_ARG);
-    copy_str(e.created_by, sizeof(e.created_by), s->user);
+    const char *rule = code_rules(&a.p, NULL, &e);
+    if (rule) return send_error(req, "403 Forbidden", rule);
+    if (!a.p.is_admin && a.p.max_codes && codes_count_owned(a.p.uid) >= a.p.max_codes) {
+        return send_error(req, "507 Insufficient Storage", "Dein Kontingent an Codes ist erschoepft");
+    }
+    copy_str(e.created_by, sizeof(e.created_by), a.p.name);
     esp_err_t err = codes_add(&e);
     if (err == ESP_OK) {
-        event_log(EV_CONFIG, "Code '%s' (#%" PRIu32 ", %s) angelegt von %s", e.name, e.id, codes_type_name(e.type), s->user);
+        log_code_change("angelegt", &e, &a.p);
         cJSON *o = cJSON_CreateObject();
         cJSON_AddBoolToObject(o, "ok", true);
         cJSON_AddNumberToObject(o, "id", e.id);
@@ -1002,9 +1248,13 @@ static esp_err_t h_codes_post(httpd_req_t *req)
 
 static esp_err_t h_codes_put(httpd_req_t *req)
 {
-    auth_session_t *s = require_auth_csrf(req);
-    if (!s) return ESP_OK;
+    req_auth_t a;
+    if (!require_auth_csrf(req, &a)) return ESP_OK;
     uint32_t id = uri_last_id(req);
+    code_entry_t before;
+    if (!codes_get(id, &before) || !codes_visible_to(&before, a.p.uid, a.p.is_admin)) {
+        return send_error(req, "404 Not Found", "Code nicht gefunden");
+    }
     cJSON *j = read_json(req);
     if (!j) return send_error(req, "400 Bad Request", "JSON erwartet");
     code_entry_t e;
@@ -1012,23 +1262,30 @@ static esp_err_t h_codes_put(httpd_req_t *req)
     cJSON_Delete(j);
     if (!ok) return codes_err_response(req, ESP_ERR_INVALID_ARG);
     e.id = id;
+    const char *rule = code_rules(&a.p, &before, &e);
+    if (rule) return send_error(req, "403 Forbidden", rule);
     esp_err_t err = codes_update(&e);
     if (err == ESP_OK) {
-        event_log(EV_CONFIG, "Code '%s' (#%" PRIu32 ") geaendert von %s", e.name, e.id, s->user);
+        log_code_change(e.enabled == before.enabled ? "geaendert" : (e.enabled ? "eingeschaltet" : "ausgeschaltet"), &e, &a.p);
     }
     return codes_err_response(req, err);
 }
 
 static esp_err_t h_codes_delete(httpd_req_t *req)
 {
-    auth_session_t *s = require_auth_csrf(req);
-    if (!s) return ESP_OK;
+    req_auth_t a;
+    if (!require_auth_csrf(req, &a)) return ESP_OK;
     uint32_t id = uri_last_id(req);
     code_entry_t e;
-    bool found = codes_get(id, &e);
+    if (!codes_get(id, &e) || !codes_visible_to(&e, a.p.uid, a.p.is_admin)) {
+        return send_error(req, "404 Not Found", "Code nicht gefunden");
+    }
+    if (!a.p.is_admin && e.owner_uid != a.p.uid) {
+        return send_error(req, "403 Forbidden", "Nur der Besitzer oder ein Administrator kann den Code loeschen");
+    }
     esp_err_t err = codes_delete(id);
-    if (err == ESP_OK && found) {
-        event_log(EV_CONFIG, "Code '%s' (#%" PRIu32 ") geloescht von %s", e.name, id, s->user);
+    if (err == ESP_OK) {
+        log_code_change("geloescht", &e, &a.p);
     }
     return codes_err_response(req, err);
 }
@@ -1038,8 +1295,8 @@ static esp_err_t h_codes_delete(httpd_req_t *req)
  * ====================================================================== */
 static esp_err_t h_door_open(httpd_req_t *req)
 {
-    auth_session_t *s = require_auth_csrf(req);
-    if (!s) return ESP_OK;
+    req_auth_t a;
+    if (!require_auth_csrf(req, &a)) return ESP_OK;
     int n = 0;
     if (req->content_len > 0) {
         cJSON *j = read_json(req);
@@ -1049,8 +1306,13 @@ static esp_err_t h_door_open(httpd_req_t *req)
         }
     }
     int idx = n ? n - 1 : access_keypad_door();
+    if (idx < 0 || idx >= CFG_MAX_DOORS) return send_error(req, "404 Not Found", "Tuer nicht vorhanden");
+    if (!a.p.is_admin && (!(a.p.perms & USER_PERM_OPEN_DOORS) || !(a.p.doors & (1u << idx)))) {
+        event_log(EV_DENIED, "Web-UI: '%s' darf Tuer %d nicht oeffnen", a.p.name, idx + 1);
+        return send_error(req, "403 Forbidden", "Du darfst diese Tuer nicht per Web-UI oeffnen");
+    }
     char reason[48];
-    snprintf(reason, sizeof(reason), "Web-UI %s", s->user);
+    snprintf(reason, sizeof(reason), "Web-UI %s", a.p.name);
     esp_err_t err = door_open(idx, reason, 0);
     if (err == ESP_ERR_INVALID_ARG) return send_error(req, "404 Not Found", "Tuer nicht vorhanden");
     if (err == ESP_ERR_INVALID_STATE) return send_error(req, "409 Conflict", "Tuer ist deaktiviert");
@@ -1064,7 +1326,8 @@ static esp_err_t h_door_open(httpd_req_t *req)
 
 static esp_err_t h_keypad_raw(httpd_req_t *req)
 {
-    if (!require_auth(req)) return ESP_OK;
+    req_auth_t a;
+    if (!require_admin(req, &a)) return ESP_OK;
     char *hex = malloc(CFG_KEYPAD_RAW_BUF * 3 + 1);
     char *ascii = malloc(CFG_KEYPAD_RAW_BUF + 1);
     if (!hex || !ascii) { free(hex); free(ascii); return send_error(req, "500 Internal Server Error", "Speicher"); }
@@ -1083,7 +1346,7 @@ static esp_err_t h_keypad_raw(httpd_req_t *req)
 }
 
 /* ========================================================================
- * API: System
+ * API: System (Admin)
  * ====================================================================== */
 static void reboot_timer_cb(void *arg)
 {
@@ -1102,11 +1365,13 @@ void web_server_schedule_reboot(uint32_t delay_ms)
 
 static esp_err_t h_system_get(httpd_req_t *req)
 {
-    if (!require_auth(req)) return ESP_OK;
+    req_auth_t a;
+    if (!require_admin(req, &a)) return ESP_OK;
     cJSON *o = cJSON_CreateObject();
     cJSON_AddItemToObject(o, "doors", doors_to_json());
     cJSON_AddNumberToObject(o, "max_doors", CFG_MAX_DOORS);
     cJSON_AddItemToObject(o, "keypad", keypad_to_json(&g_settings.keypad));
+    cJSON_AddItemToObject(o, "site", site_to_json(&g_settings.site));
     cJSON_AddStringToObject(o, "admin_user", g_settings.admin.user);
     cJSON *pins = cJSON_AddObjectToObject(o, "pins");
     cJSON_AddNumberToObject(pins, "keypad_rx", CFG_KEYPAD_RX_GPIO);
@@ -1116,41 +1381,56 @@ static esp_err_t h_system_get(httpd_req_t *req)
 
 static esp_err_t h_system_post(httpd_req_t *req)
 {
-    if (!require_auth_csrf(req)) return ESP_OK;
+    req_auth_t a;
+    if (!require_admin_csrf(req, &a)) return ESP_OK;
     cJSON *j = read_json(req);
     if (!j) return send_error(req, "400 Bad Request", "JSON erwartet");
+    cJSON *site = cJSON_GetObjectItemCaseSensitive(j, "site");
+    if (cJSON_IsObject(site)) {
+        settings_site_t s = g_settings.site;
+        const char *err = site_from_json(site, &s);
+        if (err) { cJSON_Delete(j); return send_error(req, "400 Bad Request", err); }
+        g_settings.site = s;
+        event_log(EV_CONFIG, "Anlagen-/Betreuerinfos geaendert von %s", a.p.name);
+    }
     cJSON *d = cJSON_GetObjectItemCaseSensitive(j, "doors");
     if (!d) d = cJSON_GetObjectItemCaseSensitive(j, "door");
     if (d) doors_from_json(d, g_settings.doors);
     cJSON *k = cJSON_GetObjectItemCaseSensitive(j, "keypad");
     if (cJSON_IsObject(k)) keypad_from_json(k, &g_settings.keypad);
+    bool hw = d || cJSON_IsObject(k);
     cJSON_Delete(j);
     if (settings_save() != ESP_OK) return send_error(req, "500 Internal Server Error", "Speichern fehlgeschlagen");
-    door_apply_settings();
-    keypad_apply_settings();
-    int active = 0;
-    for (int i = 0; i < CFG_MAX_DOORS; i++) active += g_settings.doors[i].enabled;
-    event_log(EV_CONFIG, "Systemeinstellungen geaendert (%d Tuer(en) aktiv, Keypad -> Tuer %d, %" PRIu32 " Bd%s)",
-              active, access_keypad_door() + 1, g_settings.keypad.baud, g_settings.keypad.learn_mode ? ", Lernmodus" : "");
+    if (hw) {
+        door_apply_settings();
+        keypad_apply_settings();
+        int active = 0;
+        for (int i = 0; i < CFG_MAX_DOORS; i++) active += g_settings.doors[i].enabled;
+        event_log(EV_CONFIG, "Systemeinstellungen geaendert (%d Tuer(en) aktiv, Keypad -> Tuer %d, %" PRIu32 " Bd%s)",
+                  active, access_keypad_door() + 1, g_settings.keypad.baud, g_settings.keypad.learn_mode ? ", Lernmodus" : "");
+    }
     return send_ok(req);
 }
 
+/* Admin: {user, old_password, new_password} – Admin-Konto umbenennen und/oder Passwort setzen */
 static esp_err_t h_password_post(httpd_req_t *req)
 {
-    auth_session_t *s = require_auth_csrf(req);
-    if (!s) return ESP_OK;
+    req_auth_t a;
+    if (!require_admin_csrf(req, &a)) return ESP_OK;
+    if (a.p.uid != AUTH_UID_ADMIN) return send_error(req, "403 Forbidden", "Nur fuer das Admin-Hauptkonto; eigenes Passwort unter Konto aendern");
     cJSON *j = read_json(req);
     if (!j) return send_error(req, "400 Bad Request", "JSON erwartet");
     const char *old = jstr(j, "old_password", "");
     const char *nw = jstr(j, "new_password", "");
     const char *user = jstr(j, "user", g_settings.admin.user);
-    if (!auth_verify_password(g_settings.admin.user, old)) {
+    if (!auth_verify_principal_password(&a.p, old)) {
         cJSON_Delete(j);
         return send_error(req, "403 Forbidden", "Altes Passwort falsch");
     }
     esp_err_t err = auth_set_password(user, nw);
     cJSON_Delete(j);
-    if (err != ESP_OK) return send_error(req, "400 Bad Request", "Neues Passwort muss mindestens 8 Zeichen haben");
+    if (err == ESP_ERR_INVALID_STATE) return send_error(req, "409 Conflict", "Dieser Name gehoert bereits einem Benutzer");
+    if (err != ESP_OK) return send_error(req, "400 Bad Request", "Name ungueltig oder neues Passwort kuerzer als 8 Zeichen");
     event_log(EV_CONFIG, "Admin-Passwort geaendert");
     char cookie[160];
     set_session_cookie(req, cookie, sizeof(cookie), NULL);
@@ -1159,7 +1439,8 @@ static esp_err_t h_password_post(httpd_req_t *req)
 
 static esp_err_t h_reboot_post(httpd_req_t *req)
 {
-    if (!require_auth_csrf(req)) return ESP_OK;
+    req_auth_t a;
+    if (!require_admin_csrf(req, &a)) return ESP_OK;
     event_log(EV_SYSTEM, "Neustart ueber Web-UI");
     web_server_schedule_reboot(1500);
     return send_ok(req);
@@ -1167,31 +1448,228 @@ static esp_err_t h_reboot_post(httpd_req_t *req)
 
 static esp_err_t h_factory_reset_post(httpd_req_t *req)
 {
-    if (!require_auth_csrf(req)) return ESP_OK;
+    req_auth_t a;
+    if (!require_admin_csrf(req, &a)) return ESP_OK;
     event_log(EV_SYSTEM, "Werksreset ueber Web-UI");
     settings_factory_reset();
     cert_store_delete();
     codes_clear();
     api_tokens_clear();
+    users_clear();
     web_server_schedule_reboot(1500);
     return send_ok(req);
 }
 
 /* ========================================================================
- * API: Backup / Restore (ohne Passwort-Hash, ohne Zertifikat/Key)
+ * API: Benutzerverwaltung (Admin)
+ * ====================================================================== */
+/* /api/users/<uid>[/<action>] zerlegen */
+static bool uri_user(const httpd_req_t *req, uint8_t *uid, char *action, size_t alen)
+{
+    char path[CONFIG_HTTPD_MAX_URI_LEN + 1];
+    uri_path(req, path, sizeof(path));
+    const char *p = strstr(path, "/api/users/");
+    if (!p) return false;
+    p += strlen("/api/users/");
+    char *end = NULL;
+    long n = strtol(p, &end, 10);
+    if (end == p || n < 1 || n > CFG_USERS_MAX) return false;
+    *uid = (uint8_t)n;
+    if (*end == '/') strlcpy(action, end + 1, alen);
+    else if (*end == '\0') action[0] = '\0';
+    else return false;
+    return true;
+}
+
+/* Felder eines Benutzers aus JSON übernehmen (Ausgangswert = *u). Fehlertext oder NULL. */
+static const char *user_from_json(const cJSON *j, user_t *u)
+{
+    copy_str(u->name, sizeof(u->name), jstr(j, "name", u->name));
+    if (!auth_valid_username(u->name)) return "Name ungueltig (1-31 Zeichen, keine Leerzeichen)";
+    const char *role = jstr(j, "role", NULL);
+    if (role) u->role = strcmp(role, "admin") == 0 ? USER_ROLE_ADMIN : USER_ROLE_USER;
+    u->enabled = jbool(j, "enabled", u->enabled);
+    u->must_change_pw = jbool(j, "must_change_pw", u->must_change_pw);
+    u->code_types = (uint8_t)jint(j, "code_types", u->code_types) & USER_TYPES_ALL;
+    u->doors = (uint32_t)jint(j, "doors", (int)u->doors) & CODES_ALL_DOORS;
+    uint8_t perms = 0;
+    if (jbool(j, "edit_shared", (u->perms & USER_PERM_EDIT_SHARED) != 0)) perms |= USER_PERM_EDIT_SHARED;
+    if (jbool(j, "open_doors", (u->perms & USER_PERM_OPEN_DOORS) != 0)) perms |= USER_PERM_OPEN_DOORS;
+    u->perms = perms;
+    int mc = jint(j, "max_codes", u->max_codes);
+    if (mc < 0) mc = 0;
+    if (mc > CFG_CODES_MAX) mc = CFG_CODES_MAX;
+    u->max_codes = (uint16_t)mc;
+    if (u->role == USER_ROLE_USER && !u->code_types) return "Mindestens einen Code-Typ erlauben";
+    if (u->role == USER_ROLE_USER && !u->doors) return "Mindestens eine Tuer freigeben";
+    return NULL;
+}
+
+static esp_err_t users_err_response(httpd_req_t *req, esp_err_t err)
+{
+    switch (err) {
+    case ESP_OK:                return send_ok(req);
+    case ESP_ERR_INVALID_ARG:   return send_error(req, "400 Bad Request", "Name ungueltig oder Passwort kuerzer als 8 Zeichen");
+    case ESP_ERR_INVALID_STATE: return send_error(req, "409 Conflict", "Dieser Name ist bereits vergeben");
+    case ESP_ERR_NOT_FOUND:     return send_error(req, "404 Not Found", "Benutzer nicht gefunden");
+    case ESP_ERR_NO_MEM:        return send_error(req, "507 Insufficient Storage", "Maximale Anzahl Benutzer erreicht");
+    default:                    return send_error(req, "500 Internal Server Error", esp_err_to_name(err));
+    }
+}
+
+static esp_err_t h_users_get(httpd_req_t *req)
+{
+    req_auth_t a;
+    if (!require_admin(req, &a)) return ESP_OK;
+    user_t *list = malloc(sizeof(user_t) * CFG_USERS_MAX);
+    if (!list) return send_error(req, "500 Internal Server Error", "Speicher");
+    size_t n = users_list(list, CFG_USERS_MAX);
+    cJSON *o = cJSON_CreateObject();
+    cJSON *arr = cJSON_AddArrayToObject(o, "users");
+    for (size_t i = 0; i < n; i++) {
+        cJSON *u = users_entry_to_json(&list[i]);
+        cJSON_AddNumberToObject(u, "codes_owned", codes_count_owned(list[i].uid));
+        cJSON_AddItemToArray(arr, u);
+    }
+    free(list);
+    cJSON_AddNumberToObject(o, "max", CFG_USERS_MAX);
+    cJSON_AddStringToObject(o, "admin_user", g_settings.admin.user);
+    cJSON_AddNumberToObject(o, "me", a.p.uid);
+    cJSON_AddItemToObject(o, "doors", doors_brief_json());
+    return send_json(req, o);
+}
+
+static esp_err_t h_users_post(httpd_req_t *req)
+{
+    req_auth_t a;
+    if (!require_admin_csrf(req, &a)) return ESP_OK;
+    cJSON *j = read_json(req);
+    if (!j) return send_error(req, "400 Bad Request", "JSON erwartet");
+    user_t u;
+    memset(&u, 0, sizeof(u));
+    u.enabled = true;
+    u.must_change_pw = true;
+    u.code_types = USER_TYPES_ALL;
+    u.doors = CODES_ALL_DOORS;
+    const char *err = user_from_json(j, &u);
+    char pw[128];
+    copy_str(pw, sizeof(pw), jstr(j, "password", ""));
+    cJSON_Delete(j);
+    if (err) return send_error(req, "400 Bad Request", err);
+    copy_str(u.created_by, sizeof(u.created_by), a.p.name);
+    esp_err_t e = users_create(&u, pw);
+    memset(pw, 0, sizeof(pw));
+    if (e != ESP_OK) return users_err_response(req, e);
+    event_log(EV_CONFIG, "Benutzer '%s' (uid %u, %s) angelegt von %s", u.name, u.uid,
+              u.role == USER_ROLE_ADMIN ? "Admin" : "Benutzer", a.p.name);
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddBoolToObject(o, "ok", true);
+    cJSON_AddNumberToObject(o, "uid", u.uid);
+    return send_json(req, o);
+}
+
+static esp_err_t h_users_put(httpd_req_t *req)
+{
+    req_auth_t a;
+    if (!require_admin_csrf(req, &a)) return ESP_OK;
+    uint8_t uid;
+    char action[16];
+    if (!uri_user(req, &uid, action, sizeof(action)) || action[0]) return send_error(req, "404 Not Found", "Unbekannter Pfad");
+    user_t u;
+    if (!users_get(uid, &u)) return send_error(req, "404 Not Found", "Benutzer nicht gefunden");
+    cJSON *j = read_json(req);
+    if (!j) return send_error(req, "400 Bad Request", "JSON erwartet");
+    user_t upd = u;
+    const char *err = user_from_json(j, &upd);
+    cJSON_Delete(j);
+    if (err) return send_error(req, "400 Bad Request", err);
+    if (uid == a.p.uid && (!upd.enabled || upd.role != USER_ROLE_ADMIN)) {
+        return send_error(req, "409 Conflict", "Das eigene Konto kann nicht gesperrt oder herabgestuft werden");
+    }
+    esp_err_t e = users_update(&upd);
+    if (e != ESP_OK) return users_err_response(req, e);
+    if (!upd.enabled || upd.role != u.role) auth_sessions_destroy_uid(uid);
+    event_log(EV_CONFIG, "Benutzer '%s' (uid %u) geaendert von %s%s", upd.name, uid, a.p.name,
+              upd.enabled ? "" : ", gesperrt");
+    return send_ok(req);
+}
+
+/* POST /api/users/<uid>/password {password, must_change_pw} oder /api/users/<uid>/twofa-reset */
+static esp_err_t h_users_action_post(httpd_req_t *req)
+{
+    req_auth_t a;
+    if (!require_admin_csrf(req, &a)) return ESP_OK;
+    uint8_t uid;
+    char action[16];
+    if (!uri_user(req, &uid, action, sizeof(action))) return send_error(req, "404 Not Found", "Unbekannter Pfad");
+    user_t u;
+    if (!users_get(uid, &u)) return send_error(req, "404 Not Found", "Benutzer nicht gefunden");
+    if (strcmp(action, "password") == 0) {
+        cJSON *j = read_json(req);
+        if (!j) return send_error(req, "400 Bad Request", "JSON erwartet");
+        char pw[128];
+        copy_str(pw, sizeof(pw), jstr(j, "password", ""));
+        bool must = jbool(j, "must_change_pw", true);
+        cJSON_Delete(j);
+        esp_err_t e = users_set_password(uid, pw, must);
+        memset(pw, 0, sizeof(pw));
+        if (e != ESP_OK) return users_err_response(req, e);
+        auth_sessions_destroy_uid(uid);
+        event_log(EV_CONFIG, "Passwort von '%s' (uid %u) zurueckgesetzt durch %s", u.name, uid, a.p.name);
+        return send_ok(req);
+    }
+    if (strcmp(action, "twofa-reset") == 0) {
+        esp_err_t e = auth_twofa_disable(uid);
+        if (e != ESP_OK) return users_err_response(req, e);
+        auth_sessions_destroy_uid(uid);
+        event_log(EV_CONFIG, "2FA von '%s' (uid %u) zurueckgesetzt durch %s", u.name, uid, a.p.name);
+        return send_ok(req);
+    }
+    return send_error(req, "404 Not Found", "Unbekannte Aktion");
+}
+
+/* DELETE /api/users/<uid>?codes=delete|transfer (Default: transfer an den handelnden Admin) */
+static esp_err_t h_users_delete(httpd_req_t *req)
+{
+    req_auth_t a;
+    if (!require_admin_csrf(req, &a)) return ESP_OK;
+    uint8_t uid;
+    char action[16];
+    if (!uri_user(req, &uid, action, sizeof(action)) || action[0]) return send_error(req, "404 Not Found", "Unbekannter Pfad");
+    if (uid == a.p.uid) return send_error(req, "409 Conflict", "Das eigene Konto kann nicht geloescht werden");
+    user_t u;
+    if (!users_get(uid, &u)) return send_error(req, "404 Not Found", "Benutzer nicht gefunden");
+    char mode[12] = {0};
+    uri_query(req, "codes", mode, sizeof(mode));
+    bool del = strcmp(mode, "delete") == 0;
+    size_t owned = codes_count_owned(uid);
+    esp_err_t e = users_delete(uid);
+    if (e != ESP_OK) return users_err_response(req, e);
+    auth_sessions_destroy_uid(uid);
+    codes_user_removed(uid, del, a.p.uid);
+    event_log(EV_CONFIG, "Benutzer '%s' (uid %u) geloescht von %s, %u Code(s) %s", u.name, uid, a.p.name,
+              (unsigned)owned, del ? "geloescht" : "uebernommen");
+    return send_ok(req);
+}
+
+/* ========================================================================
+ * API: Backup / Restore (Admin; ohne Admin-Passwort, Token, Zertifikat/Key)
  * ====================================================================== */
 static esp_err_t h_backup_get(httpd_req_t *req)
 {
-    if (!require_auth(req)) return ESP_OK;
+    req_auth_t a;
+    if (!require_admin(req, &a)) return ESP_OK;
     cJSON *o = cJSON_CreateObject();
     cJSON_AddStringToObject(o, "format", "esp32_key_system_backup");
-    cJSON_AddNumberToObject(o, "version", 2);
+    cJSON_AddNumberToObject(o, "version", BACKUP_VERSION);
     cJSON_AddStringToObject(o, "firmware", esp_app_get_description()->version);
     cJSON_AddNumberToObject(o, "created", (double)(time_sync_is_valid() ? time(NULL) : 0));
     cJSON *st = cJSON_AddObjectToObject(o, "settings");
     cJSON_AddItemToObject(st, "net", net_to_json(&g_settings.net));
     cJSON_AddItemToObject(st, "doors", doors_to_json());
     cJSON_AddItemToObject(st, "keypad", keypad_to_json(&g_settings.keypad));
+    cJSON_AddItemToObject(st, "site", site_to_json(&g_settings.site));
+    cJSON_AddItemToObject(o, "users", users_to_json(true));     /* mit Passwort-Hash und 2FA (Entscheidung 29.10.2026) */
     cJSON_AddItemToObject(o, "codes", codes_to_json());
     char fname[40 + SETTINGS_STR_HOST];
     snprintf(fname, sizeof(fname), "attachment; filename=\"%s-backup.json\"", g_settings.net.hostname);
@@ -1201,10 +1679,10 @@ static esp_err_t h_backup_get(httpd_req_t *req)
 
 static esp_err_t h_restore_post(httpd_req_t *req)
 {
-    auth_session_t *s = require_auth_csrf(req);
-    if (!s) return ESP_OK;
+    req_auth_t a;
+    if (!require_admin_csrf(req, &a)) return ESP_OK;
     cJSON *j = read_json_max(req, MAX_BACKUP_BODY);
-    if (!j) return send_error(req, "400 Bad Request", "JSON fehlt, ungueltig oder zu gross (max. 64 KB)");
+    if (!j) return send_error(req, "400 Bad Request", "JSON fehlt, ungueltig oder zu gross (max. 96 KB)");
     if (strcmp(jstr(j, "format", ""), "esp32_key_system_backup") != 0) {
         cJSON_Delete(j);
         return send_error(req, "400 Bad Request", "Keine Backup-Datei dieses Geraetetyps");
@@ -1223,7 +1701,12 @@ static esp_err_t h_restore_post(httpd_req_t *req)
         if (d) doors_from_json(d, ns.doors);
         cJSON *k = cJSON_GetObjectItemCaseSensitive(st, "keypad");
         if (cJSON_IsObject(k)) keypad_from_json(k, &ns.keypad);
+        cJSON *site = cJSON_GetObjectItemCaseSensitive(st, "site");
+        if (cJSON_IsObject(site)) site_from_json(site, &ns.site);
     }
+    cJSON *users = cJSON_GetObjectItemCaseSensitive(j, "users");
+    bool had_users = cJSON_IsArray(users);
+    esp_err_t uerr = had_users ? users_from_json(users) : ESP_OK;
     cJSON *codes = cJSON_GetObjectItemCaseSensitive(j, "codes");
     esp_err_t cerr = cJSON_IsArray(codes) ? codes_from_json(codes, true) : ESP_OK;
     cJSON_Delete(j);
@@ -1232,25 +1715,32 @@ static esp_err_t h_restore_post(httpd_req_t *req)
     esp_err_t serr = settings_save();
     door_apply_settings();
     keypad_apply_settings();
-    event_log(EV_CONFIG, "Backup eingespielt von %s (%u Codes)%s", s->user, (unsigned)codes_count(),
-              (serr != ESP_OK || cerr != ESP_OK) ? " MIT FEHLERN" : "");
-    if (serr != ESP_OK || cerr != ESP_OK) return send_error(req, "500 Internal Server Error", "Teilweise fehlgeschlagen, Protokoll pruefen");
+    if (had_users) {
+        /* Benutzer ersetzt: alle Benutzer-Sessions beenden, Admin bleibt angemeldet */
+        for (uint8_t u = 1; u <= CFG_USERS_MAX; u++) auth_sessions_destroy_uid(u);
+    }
+    bool failed = (serr != ESP_OK || cerr != ESP_OK || uerr != ESP_OK);
+    event_log(EV_CONFIG, "Backup eingespielt von %s (%u Codes, %u Benutzer)%s", a.p.name, (unsigned)codes_count(),
+              (unsigned)users_count(), failed ? " MIT FEHLERN" : "");
+    if (failed) return send_error(req, "500 Internal Server Error", "Teilweise fehlgeschlagen, Protokoll pruefen");
     return send_ok_reboot(req);
 }
 
 /* ========================================================================
- * API: Firmware (signiertes OTA)
+ * API: Firmware (signiertes OTA, Admin)
  * ====================================================================== */
 static esp_err_t h_firmware_get(httpd_req_t *req)
 {
-    if (!require_auth(req)) return ESP_OK;
+    req_auth_t a;
+    if (!require_admin(req, &a)) return ESP_OK;
     return send_json(req, ota_info_json());
 }
 
 /* Body = firmware.bin (application/octet-stream), wird direkt in die OTA-Partition geschrieben */
 static esp_err_t h_firmware_post(httpd_req_t *req)
 {
-    if (!require_auth_csrf(req)) return ESP_OK;
+    req_auth_t a;
+    if (!require_admin_csrf(req, &a)) return ESP_OK;
     size_t total = req->content_len;
     if (total < 4096) return send_error(req, "400 Bad Request", "Kein Firmware-Image");
 
@@ -1293,7 +1783,8 @@ static esp_err_t h_firmware_post(httpd_req_t *req)
 
 static esp_err_t h_firmware_rollback(httpd_req_t *req)
 {
-    if (!require_auth_csrf(req)) return ESP_OK;
+    req_auth_t a;
+    if (!require_admin_csrf(req, &a)) return ESP_OK;
     esp_err_t err = ota_rollback();
     if (err == ESP_ERR_NOT_FOUND) return send_error(req, "409 Conflict", "In der anderen Partition liegt keine Firmware");
     if (err != ESP_OK) return send_error(req, "500 Internal Server Error", esp_err_to_name(err));
@@ -1306,9 +1797,7 @@ static esp_err_t h_firmware_rollback(httpd_req_t *req)
 static void uri_last_segment(const httpd_req_t *req, char *out, size_t len)
 {
     char path[CONFIG_HTTPD_MAX_URI_LEN + 1];
-    strlcpy(path, req->uri, sizeof(path));
-    char *q = strchr(path, '?');
-    if (q) *q = '\0';
+    uri_path(req, path, sizeof(path));
     char *slash = strrchr(path, '/');
     strlcpy(out, slash ? slash + 1 : "", len);
 }
@@ -1334,7 +1823,8 @@ static const char *token_from_json(const cJSON *j, api_token_t *t)
 
 static esp_err_t h_tokens_get(httpd_req_t *req)
 {
-    if (!require_auth(req)) return ESP_OK;
+    req_auth_t a;
+    if (!require_admin(req, &a)) return ESP_OK;
     api_token_t *list = malloc(sizeof(api_token_t) * CFG_TOKENS_MAX);
     if (!list) return send_error(req, "500 Internal Server Error", "Speicher");
     size_t n = api_tokens_list(list, CFG_TOKENS_MAX);
@@ -1352,8 +1842,8 @@ static esp_err_t h_tokens_get(httpd_req_t *req)
 
 static esp_err_t h_tokens_post(httpd_req_t *req)
 {
-    auth_session_t *s = require_auth_csrf(req);
-    if (!s) return ESP_OK;
+    req_auth_t a;
+    if (!require_admin_csrf(req, &a)) return ESP_OK;
     cJSON *j = read_json(req);
     if (!j) return send_error(req, "400 Bad Request", "JSON erwartet");
     api_token_t t = { .doors = CODES_ALL_DOORS, .can_open = true, .can_status = true, .enabled = true };
@@ -1365,7 +1855,7 @@ static esp_err_t h_tokens_post(httpd_req_t *req)
     esp_err_t e = api_tokens_create(&t, plain, sizeof(plain));
     if (e == ESP_ERR_NO_MEM) return send_error(req, "507 Insufficient Storage", "Maximale Anzahl Token erreicht");
     if (e != ESP_OK) return send_error(req, "500 Internal Server Error", "Token konnte nicht angelegt werden");
-    event_log(EV_CONFIG, "API-Token '%s' (%s) angelegt von %s", t.name, t.id, s->user);
+    event_log(EV_CONFIG, "API-Token '%s' (%s) angelegt von %s", t.name, t.id, a.p.name);
     cJSON *o = cJSON_CreateObject();
     cJSON_AddBoolToObject(o, "ok", true);
     cJSON_AddStringToObject(o, "token", plain);          /* einzige Stelle, an der der Klartext existiert */
@@ -1376,8 +1866,8 @@ static esp_err_t h_tokens_post(httpd_req_t *req)
 
 static esp_err_t h_tokens_put(httpd_req_t *req)
 {
-    auth_session_t *s = require_auth_csrf(req);
-    if (!s) return ESP_OK;
+    req_auth_t a;
+    if (!require_admin_csrf(req, &a)) return ESP_OK;
     char id[32];
     uri_last_segment(req, id, sizeof(id));
     api_token_t t;
@@ -1388,14 +1878,14 @@ static esp_err_t h_tokens_put(httpd_req_t *req)
     cJSON_Delete(j);
     if (err) return send_error(req, "400 Bad Request", err);
     if (api_tokens_update(&t) != ESP_OK) return send_error(req, "500 Internal Server Error", "Speichern fehlgeschlagen");
-    event_log(EV_CONFIG, "API-Token '%s' (%s) geaendert von %s%s", t.name, t.id, s->user, t.enabled ? "" : ", gesperrt");
+    event_log(EV_CONFIG, "API-Token '%s' (%s) geaendert von %s%s", t.name, t.id, a.p.name, t.enabled ? "" : ", gesperrt");
     return send_ok(req);
 }
 
 static esp_err_t h_tokens_delete(httpd_req_t *req)
 {
-    auth_session_t *s = require_auth_csrf(req);
-    if (!s) return ESP_OK;
+    req_auth_t a;
+    if (!require_admin_csrf(req, &a)) return ESP_OK;
     char id[32];
     uri_last_segment(req, id, sizeof(id));
     api_token_t t;
@@ -1403,7 +1893,7 @@ static esp_err_t h_tokens_delete(httpd_req_t *req)
     esp_err_t e = api_tokens_delete(id);
     if (e == ESP_ERR_NOT_FOUND) return send_error(req, "404 Not Found", "Token nicht gefunden");
     if (e != ESP_OK) return send_error(req, "500 Internal Server Error", "Speichern fehlgeschlagen");
-    if (found) event_log(EV_CONFIG, "API-Token '%s' (%s) geloescht von %s", t.name, id, s->user);
+    if (found) event_log(EV_CONFIG, "API-Token '%s' (%s) geloescht von %s", t.name, id, a.p.name);
     return send_ok(req);
 }
 
@@ -1616,13 +2106,14 @@ static const httpd_uri_t s_routes[] = {
     ROUTE("/api/setup",                HTTP_POST,   h_setup_post),
     ROUTE("/api/login",                HTTP_POST,   h_login_post),
     ROUTE("/api/login/2fa",            HTTP_POST,   h_login_2fa_post),
+    ROUTE("/api/logout",               HTTP_POST,   h_logout_post),
+    ROUTE("/api/account/password",     HTTP_POST,   h_account_password_post),
     ROUTE("/api/twofa",                HTTP_GET,    h_twofa_get),
     ROUTE("/api/twofa/setup",          HTTP_POST,   h_twofa_setup_post),
     ROUTE("/api/twofa/confirm",        HTTP_POST,   h_twofa_confirm_post),
     ROUTE("/api/twofa/cancel",         HTTP_POST,   h_twofa_cancel_post),
     ROUTE("/api/twofa/disable",        HTTP_POST,   h_twofa_disable_post),
     ROUTE("/api/twofa/recovery",       HTTP_POST,   h_twofa_recovery_post),
-    ROUTE("/api/logout",               HTTP_POST,   h_logout_post),
     ROUTE("/api/status",               HTTP_GET,    h_status_get),
     ROUTE("/api/network",              HTTP_GET,    h_network_get),
     ROUTE("/api/network",              HTTP_POST,   h_network_post),
@@ -1642,6 +2133,11 @@ static const httpd_uri_t s_routes[] = {
     ROUTE("/api/system/password",      HTTP_POST,   h_password_post),
     ROUTE("/api/system/reboot",        HTTP_POST,   h_reboot_post),
     ROUTE("/api/system/factory-reset", HTTP_POST,   h_factory_reset_post),
+    ROUTE("/api/users",                HTTP_GET,    h_users_get),
+    ROUTE("/api/users",                HTTP_POST,   h_users_post),
+    ROUTE("/api/users/*",              HTTP_PUT,    h_users_put),
+    ROUTE("/api/users/*",              HTTP_POST,   h_users_action_post),
+    ROUTE("/api/users/*",              HTTP_DELETE, h_users_delete),
     ROUTE("/api/tokens",               HTTP_GET,    h_tokens_get),
     ROUTE("/api/tokens",               HTTP_POST,   h_tokens_post),
     ROUTE("/api/tokens/*",             HTTP_PUT,    h_tokens_put),

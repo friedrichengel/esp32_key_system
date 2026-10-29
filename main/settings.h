@@ -12,7 +12,7 @@
 #include "esp_err.h"
 #include "config.h"
 
-#define SETTINGS_VERSION        3               /* v3: doors[], keypad.door (24.10.2026) */
+#define SETTINGS_VERSION        4               /* v4: site (Loginseite), v3: doors[], keypad.door */
 #define SETTINGS_TOTP_SECRET_LEN 20
 #define SETTINGS_RECOVERY_COUNT 8
 #define SETTINGS_STR_SHORT      32
@@ -22,6 +22,8 @@
 #define SETTINGS_STR_TZ         64
 #define SETTINGS_PW_HASH_LEN    32
 #define SETTINGS_PW_SALT_LEN    16
+#define SETTINGS_STR_EMAIL      64
+#define SETTINGS_STR_INFO       512
 
 typedef enum {
     IPV4_MODE_DHCP = 0,
@@ -95,13 +97,22 @@ typedef struct {
     int64_t  last_counter;                            /* Replay-Schutz: letzter akzeptierter Zeitschritt */
 } settings_twofa_t;
 
+/* Anzeige auf der Loginseite – ohne Anmeldung für jeden im Netz sichtbar! */
+typedef struct {
+    char     name[SETTINGS_STR_SHORT];                /* Anlagenbezeichnung, leer = nur Hostname */
+    char     support_email[SETTINGS_STR_EMAIL];       /* Systembetreuer                          */
+    char     info_text[SETTINGS_STR_INFO];            /* mehrzeiliger Text, z. B. Adresse        */
+} settings_site_t;
+
+/* Neue Felder nur am Ende anhängen: settings_init() übernimmt ältere Blobs als Präfix. */
 typedef struct {
     uint32_t           version;
     settings_network_t net;
     settings_door_t    doors[CFG_MAX_DOORS];
     settings_keypad_t  keypad;
     settings_admin_t   admin;
-    settings_twofa_t   twofa;
+    settings_twofa_t   twofa;                         /* 2FA des Admins; Benutzer: users.json   */
+    settings_site_t    site;                          /* ab v4                                   */
 } settings_t;
 
 /* Globale Instanz; nach settings_init() gültig. Schreibzugriff nur über settings_save(). */

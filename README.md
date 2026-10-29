@@ -1,6 +1,6 @@
 # esp32_key_system
 
-Zutrittssystem auf dem **ESP32-S31-Function-CoreBoard-1**: Keypad (RS232) → Code-Prüfung mit Dauer-/Zeit-/Einmalcodes → Relais öffnet die Tür. Verwaltung per HTTPS-Webseite (IPv4/IPv6), signierte Firmware-Updates, gerätespezifisches TLS-Zertifikat mit Upload-Möglichkeit.
+Zutrittssystem auf dem **ESP32-S31-Function-CoreBoard-1**: Keypad (RS232) → Code-Prüfung mit Dauer-/Zeit-/Einmalcodes → Relais öffnet die Tür (bis zu 4 Türen). Verwaltung per HTTPS-Webseite (IPv4/IPv6) mit Admin und bis zu 16 Benutzern, die nur ihre eigenen oder freigegebenen Codes sehen; 2FA (TOTP) je Konto, API-Token für Hausautomation, signierte Firmware-Updates, gerätespezifisches TLS-Zertifikat mit Upload-Möglichkeit.
 
 **Status (28.10.2026):** Alle Phasen aus [PLAN.md](PLAN.md) implementiert und mit ESP-IDF 6.1 gebaut. Auf dem Board getestet: Boot, Ethernet (1 Gbit/s, DHCP, SLAAC), HTTPS über IPv4/IPv6, mDNS und Keypad-Empfang. Noch ungetestet: Relais, Türkontakt/REX, OTA, 2FA. Pins liegen gesammelt in [main/config.h](main/config.h) (siehe [docs/hardware.md](docs/hardware.md)).
 
@@ -35,6 +35,7 @@ Hinweise zu PlatformIO: Die generierte Konfiguration liegt in `sdkconfig.coreboa
 3. Ersteinrichtung: Admin-Benutzer und Passwort (mind. 8 Zeichen) festlegen.
 4. System → Keypad: Lernmodus einschalten, Tasten drücken, Rahmen/Abschlusszeichen anhand der Rohdaten einstellen.
 5. Codes anlegen, Relais-Impulsdauer und Polarität unter System prüfen, „Tür öffnen“ testen.
+6. Optional: unter Benutzer weitere Konten mit erlaubten Code-Typen, Türen und Rechten anlegen; unter System → „Anlage und Betreuer“ Kontakt und Adresse für die Anmeldeseite hinterlegen.
 
 Werksreset ohne Web-Zugang: BOOT-Taster 10 s halten (LED blinkt ab 2 s rot).
 

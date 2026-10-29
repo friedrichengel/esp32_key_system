@@ -46,6 +46,7 @@
  * Austaster (REX, gegen GND), beide mit internem Pull-up. Tür 1 = ursprüngliche Pins.
  * Die Pins der Türen 2-4 liegen auf freien J2-Pins; GPIO2/3 bleiben als Reserve frei. */
 #define CFG_MAX_DOORS             4
+#define CFG_ALL_DOORS_MASK        ((1u << CFG_MAX_DOORS) - 1)
 /*                                  Tür 1        Tür 2        Tür 3        Tür 4   */
 #define CFG_DOOR_RELAY_GPIOS      { GPIO_NUM_40, GPIO_NUM_43, GPIO_NUM_46, GPIO_NUM_49 }  /* J2-19, 17, 16, 11 */
 #define CFG_DOOR_CONTACT_GPIOS    { GPIO_NUM_42, GPIO_NUM_44, GPIO_NUM_47, GPIO_NUM_36 }  /* J2-20, 18, 13, 24 */
@@ -64,6 +65,12 @@
 #define CFG_KEYPAD_FAIL_LIMIT     5             /* Fehlversuche bis zur Sperre              */
 #define CFG_KEYPAD_LOCK_BASE_S    30            /* erste Sperre, verdoppelt sich            */
 #define CFG_KEYPAD_LOCK_MAX_S     600
+
+/* Einmalcodes: Nutzungsfenster nach der ersten Eingabe (0 = genau eine Eingabe), siehe PLAN.md §8d */
+#define CFG_ONETIME_GRACE_MAX_S   600           /* Obergrenze 10 min                         */
+
+/* Benutzer zusätzlich zum Admin (uid 1..CFG_USERS_MAX, Admin = uid 0), siehe PLAN.md §8b */
+#define CFG_USERS_MAX             16
 
 /* API-Token für Drittsysteme (Hausautomation), siehe PLAN.md §8a */
 #define CFG_TOKENS_MAX            8
@@ -104,6 +111,7 @@
 #define CFG_LOG_PATH              CFG_FS_BASE_PATH "/events.log"
 #define CFG_CODES_PATH            CFG_FS_BASE_PATH "/codes.json"
 #define CFG_TOKENS_PATH           CFG_FS_BASE_PATH "/tokens.json"
+#define CFG_USERS_PATH            CFG_FS_BASE_PATH "/users.json"
 #define CFG_CERT_ORG_NAME         "esp32_key_system"
 
 /* ========================================================================

@@ -40,6 +40,7 @@ idf_component_register(
         "keypad_rs232.c"
         "access.c"
         "api_tokens.c"
+        "users.c"
         "ota_update.c"
     INCLUDE_DIRS
         "."

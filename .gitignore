@@ -18,6 +18,9 @@ main/web_assets_gen.h
 # Private Schlüssel niemals einchecken
 keys/*
 !keys/.gitkeep
+# Sicherheitsnetz: PEM/Key-Dateien auch außerhalb von keys/ nie einchecken
+*.pem
+*.key
 
 # IDE
 .vscode/

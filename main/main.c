@@ -33,6 +33,7 @@
 #include "access.h"
 #include "door_relay.h"
 #include "api_tokens.h"
+#include "users.h"
 #include "ota_update.h"
 
 static const char *TAG = "main";
@@ -83,6 +84,8 @@ static void boot_button_task(void *arg)
                 settings_factory_reset();
                 cert_store_delete();
                 codes_clear();
+                api_tokens_clear();
+                users_clear();
                 vTaskDelay(pdMS_TO_TICKS(500));
                 esp_restart();
             }
@@ -139,6 +142,7 @@ void app_main(void)
     /* Zutritt: Codes laden, Relais + Keypad starten (unabhängig vom Netz) */
     ESP_ERROR_CHECK(codes_init());
     ESP_ERROR_CHECK(api_tokens_init());
+    ESP_ERROR_CHECK(users_init());
     access_init();
 
     /* Zertifikat laden/erzeugen (braucht LittleFS), dann HTTPS-Server */
