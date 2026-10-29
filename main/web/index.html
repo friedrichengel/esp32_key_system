@@ -236,9 +236,11 @@
           <label>Name <input name="name" maxlength="31" required autocomplete="off" placeholder="z. B. mueller"></label>
           <label id="user-pw-row">Startpasswort <input name="password" type="password" minlength="8" autocomplete="new-password" placeholder="mind. 8 Zeichen"></label>
           <label>Rolle <select name="role"><option value="user">Benutzer</option><option value="admin">Administrator (alle Rechte)</option></select></label>
-          <label>Maximale Anzahl eigener Codes (0 = kein eigenes Limit) <input name="max_codes" type="number" min="0" max="200" value="0"></label>
+          <label>Eigene Codes max. (0 = kein Limit) <input name="max_codes" type="number" min="0" max="200" value="0"></label>
+        </div>
+        <div class="row">
           <label><input type="checkbox" name="enabled" checked> Aktiv (darf sich anmelden)</label>
-          <label><input type="checkbox" name="must_change_pw" checked> Muss das Passwort beim nächsten Login ändern</label>
+          <label><input type="checkbox" name="must_change_pw" checked> Passwort beim nächsten Login ändern</label>
         </div>
         <div id="user-rights">
           <fieldset><legend>Darf diese Code-Typen anlegen</legend>
