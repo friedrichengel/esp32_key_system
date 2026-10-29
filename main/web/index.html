@@ -135,9 +135,9 @@
           <label>Name <input name="name" maxlength="31" required placeholder="z. B. Hausmeister"></label>
           <label>Code <input name="code" minlength="4" maxlength="12" pattern="[A-Za-z0-9]{4,12}" required placeholder="4–12 Zeichen"></label>
           <label>Typ <select name="type"><option value="permanent">Dauercode</option><option value="timed">Zeitcode (von/bis)</option><option value="onetime">Einmalcode</option></select></label>
-          <label><input type="checkbox" name="enabled" checked> Aktiv</label>
           <label id="code-owner-row" data-admin>Besitzer <select name="owner"></select></label>
         </div>
+        <label><input type="checkbox" name="enabled" checked> Aktiv</label>
         <fieldset><legend>Türen</legend>
           <div class="row" id="code-doors"></div>
           <p class="hint">Am Keypad öffnet ein Code nur die dem Keypad zugeordnete Tür; über Web-UI und API gelten die hier gewählten Türen.</p>
