@@ -72,6 +72,13 @@ void settings_set_defaults(settings_t *s)
     s->admin.setup_done = false;
 
     s->wifi.enabled = false;                    /* Kabel ist Standard, WLAN nur gezielt */
+    s->sms.enabled = false;
+    strlcpy(s->sms.modem, "1-1", sizeof(s->sms.modem));
+
+    s->codes.grace_default_s = 0;
+    s->codes.sharing_enabled = true;            /* bisheriges Verhalten */
+
+    s->keypad_ext.close_presses = 3;            /* 3x Loeschtaste = Rolltor ab */
 }
 
 /* Jede Version hängt nur am Ende an, der alte Blob ist ein Präfix des neuen. Für jede ältere
@@ -79,9 +86,12 @@ void settings_set_defaults(settings_t *s)
  * sizeof des alten Structs ist dieser Wert auf die Ausrichtung gerundet. */
 #define SETTINGS_ROUND(n) (((n) + _Alignof(settings_t) - 1) / _Alignof(settings_t) * _Alignof(settings_t))
 static const struct { uint32_t version; size_t end; const char *added; } s_old_layouts[] = {
-    { 3, offsetof(settings_t, site),     "Loginseiten-Infos, Tuertyp, WLAN" },
-    { 4, offsetof(settings_t, door_ext), "Tuertyp, WLAN" },
-    { 5, offsetof(settings_t, wifi),     "WLAN" },
+    { 3, offsetof(settings_t, site),     "Loginseiten-Infos, Tuertyp, WLAN, SMS, Code-Vorgaben" },
+    { 4, offsetof(settings_t, door_ext), "Tuertyp, WLAN, SMS, Code-Vorgaben" },
+    { 5, offsetof(settings_t, wifi),     "WLAN, SMS, Code-Vorgaben" },
+    { 6, offsetof(settings_t, sms),      "SMS-Versand, Code-Vorgaben" },
+    { 7, offsetof(settings_t, codes),    "Code-Vorgaben, Keypad-Schliessbefehl" },
+    { 8, offsetof(settings_t, keypad_ext), "Keypad-Schliessbefehl" },
 };
 
 /* Blob mit anderer Version/Größe übernehmen, soweit das Layout es erlaubt; sonst Defaults.

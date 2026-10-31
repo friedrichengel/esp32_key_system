@@ -119,7 +119,8 @@
     $$('#nav a').forEach(a => a.classList.toggle('active', a.getAttribute('href') === '#' + id));
   }
 
-  const ADMIN_VIEWS = ['log', 'users', 'api', 'network', 'cert', 'firmware', 'system'];
+  const ADMIN_VIEWS = ['users', 'api', 'network', 'cert', 'firmware', 'system'];
+  const canViewLog = () => isAdmin() || !!(session.perms && session.perms.view_log);
   async function route() {
     clearInterval(refreshTimer);
     if (!session.authenticated) {
@@ -144,11 +145,12 @@
       return;
     }
     $$('[data-admin]').forEach(el => el.classList.toggle('hidden', !isAdmin()));
+    $$('[data-log]').forEach(el => el.classList.toggle('hidden', !canViewLog()));
     $('#nav').classList.remove('hidden');
     let view = (location.hash || '#dashboard').slice(1);
     const loaders = { dashboard: loadDashboard, codes: loadCodes, log: loadLog, users: loadUsers, api: loadTokens, network: loadNetwork,
                       cert: loadCert, firmware: loadFirmware, system: loadSystem, account: loadAccount };
-    if (!loaders[view] || (!isAdmin() && ADMIN_VIEWS.includes(view))) { location.hash = '#dashboard'; return; }
+    if (!loaders[view] || (!isAdmin() && ADMIN_VIEWS.includes(view)) || (view === 'log' && !canViewLog())) { location.hash = '#dashboard'; return; }
     show(view);
     try { await loaders[view](); } catch (e) { toast(e.message, 'bad'); }
     if (view === 'dashboard') refreshTimer = setInterval(() => loadDashboard().catch(() => {}), 5000);
@@ -223,7 +225,7 @@
       ]);
     }
     kv($('#dash-sys'), sysRows);
-    if (s.admin) {
+    if (canViewLog()) {
       const l = await api('/api/log?max=8');
       $('#dash-log tbody').innerHTML = l.entries.map(e =>
         `<tr><td class="t">${fmtTs(e)}</td><td><span class="cat ${e.cat}">${e.cat}</span></td><td>${esc(e.msg)}</td></tr>`).join('');
@@ -249,6 +251,15 @@
   let codesCache = [], usersBrief = [], graceRunning = false, codesMeta = {};
 
   function userName(uid) { const u = usersBrief.find(x => x.uid === uid); return u ? u.name : ('uid ' + uid); }
+  function userOrg(uid) { const u = usersBrief.find(x => x.uid === uid); return u && u.org ? u.org : ''; }
+  function renderOrgFilter() {
+    const sel = $('#codes-org');
+    const orgs = [...new Set(usersBrief.map(u => u.org).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+    const cur = sel.value;
+    sel.innerHTML = `<option value="">${orgs.length ? 'Alle Organisationen' : 'Keine Organisation angelegt'}</option>` + orgs.map(o => `<option value="${esc(o)}">${esc(o)}</option>`).join('');
+    if (orgs.includes(cur)) sel.value = cur;
+    sel.disabled = !orgs.length;
+  }
   function sharedNames(mask) {
     return usersBrief.filter(u => u.uid && (mask & (1 << u.uid))).map(u => `<span class="tag">${esc(u.name)}</span>`).join('') || '–';
   }
@@ -283,8 +294,9 @@
   }
   function renderCodes() {
     const now = Math.floor(Date.now() / 1000);
-    const f = isAdmin() ? $('#codes-filter').value : 'all';
-    const list = codesCache.filter(c => f === 'all' || (f === 'mine' ? c.owner === session.uid : c.shared !== 0));
+    const f = isAdmin() && codesMeta.sharing_enabled ? $('#codes-filter').value : 'all';
+    const org = $('#codes-org').value;
+    const list = codesCache.filter(c => (f === 'all' || (f === 'mine' ? c.owner === session.uid : c.shared !== 0)) && (!org || userOrg(c.owner) === org));
     graceRunning = codesCache.some(c => c.grace_remaining_s > 0);
     $('#codes-table tbody').innerHTML = list.map(c => {
       const st = codeStatus(c, now);
@@ -294,12 +306,15 @@
         <td>${doorsText(c.doors)}</td>
         <td>${codeValidity(c)}</td><td>${c.uses}${c.max_uses && !c.grace_s ? ' / ' + c.max_uses : ''}</td>
         <td>${esc(userName(c.owner))}${c.owner === session.uid ? ' <span class="hint">(ich)</span>' : ''}</td>
-        <td>${sharedNames(c.shared)}</td>
+        <td>${esc(userOrg(c.owner))}</td>
+        <td class="col-share">${sharedNames(c.shared)}</td>
+        <td>${esc(c.phone || '')}</td>
         <td><span class="badge ${st[1]}">${st[0]}</span></td>
         <td class="actions"><button class="secondary" data-act="edit">${acc === 'toggle' ? 'Ein/Aus' : 'Bearbeiten'}</button>
+          ${codesMeta.sms_enabled && c.phone && acc !== 'toggle' ? '<button class="secondary" data-act="sms">SMS</button>' : ''}
           ${acc === 'full' || acc === 'owner' ? '<button class="danger" data-act="del">Löschen</button>' : ''}</td>
       </tr>`;
-    }).join('') || '<tr><td colspan="10" class="hint">Keine Codes vorhanden.</td></tr>';
+    }).join('') || '<tr><td colspan="12" class="hint">Keine Codes vorhanden.</td></tr>';
   }
   async function loadCodes(quiet) {
     const r = await api('/api/codes');
@@ -307,6 +322,8 @@
     doorsBrief = r.doors;
     usersBrief = r.users;
     codesMeta = r;
+    renderOrgFilter();
+    document.body.classList.toggle('no-share', !r.sharing_enabled);
     const quota = !isAdmin() && session.max_codes ? ` · eigenes Limit ${r.owned} / ${session.max_codes}` : '';
     $('#codes-count').textContent = isAdmin() ? `(${r.total} / ${r.max})` : `(${r.codes.length} sichtbar, ${r.total} / ${r.max} gesamt${quota})`;
     $('#codes-time-warn').classList.toggle('hidden', r.time_valid);
@@ -332,7 +349,8 @@
     const acc = c ? codeAccess(c) : (isAdmin() ? 'full' : 'owner');
     $('#code-editor-title').textContent = c ? `Code bearbeiten: ${c.name}` : 'Neuer Code';
     const data = c ? Object.assign({}, c) : { id: '', type: TYPE_ORDER.find(typeAllowed) || 'permanent', enabled: true, weekdays: 0x7F, win_from: 360, win_to: 1200, max_uses: 0,
-      doors: (allEnabledMask() & (isAdmin() ? -1 : session.doors)) || (isAdmin() ? 1 : session.doors), owner: session.uid, shared: 0, grace_s: 0 };
+      doors: (allEnabledMask() & (isAdmin() ? -1 : session.doors)) || (isAdmin() ? 1 : session.doors), owner: session.uid, shared: 0,
+      grace_s: codesMeta.grace_default_s || 0 };
     data.valid_from_local = unixToLocalInput(data.valid_from);
     data.valid_until_local = unixToLocalInput(data.valid_until);
     data.win_from_t = minToTime(data.win_from || 0);
@@ -341,14 +359,16 @@
     fillForm(f, data);
     $$('option', f.type).forEach(o => { o.disabled = !typeAllowed(o.value); });
     $$('#code-weekdays input').forEach(i => i.checked = !!(data.weekdays & (1 << Number(i.dataset.wd))));
-    renderDoorChecks($('#code-doors'), data.doors, null, isAdmin() ? null : session.doors);
+    renderDoorChecks($('#code-doors'), data.doors, doorsBrief.filter(d => d.enabled), isAdmin() ? null : session.doors);
     if (isAdmin()) renderOwnerSelect(f.owner, data.owner);
     renderShareChecks($('#code-share'), data.shared, data.owner);
     /* Freigegeben ohne Bearbeitungsrecht: nur Aktiv-Schalter; Freigaben nur Besitzer/Admin */
     const readOnly = acc === 'toggle';
     $('#code-readonly-note').classList.toggle('hidden', !readOnly);
     $$('input,select', f).forEach(i => { i.disabled = readOnly && i.name !== 'enabled'; });
-    $('#code-share-row').classList.toggle('hidden', acc === 'edit' || readOnly);
+    $('#code-share-row').classList.toggle('hidden', acc === 'edit' || readOnly || !codesMeta.sharing_enabled);
+    $('#code-sms-row').classList.toggle('hidden', !codesMeta.sms_enabled || readOnly);
+    f.send_sms.checked = false;
     toggleCodeFields();
     $('#code-editor').classList.remove('hidden');
     $('#code-editor').scrollIntoView({ behavior: 'smooth' });
@@ -369,12 +389,21 @@
     toggleCodeFields();
   });
   $('#codes-filter').addEventListener('change', renderCodes);
+  $('#codes-org').addEventListener('change', renderCodes);
   $('#codes-table').addEventListener('click', async (ev) => {
     const btn = ev.target.closest('button[data-act]');
     if (!btn) return;
     const id = Number(btn.closest('tr').dataset.id);
     const c = codesCache.find(x => x.id === id);
     if (btn.dataset.act === 'edit') return openCodeEditor(c);
+    if (btn.dataset.act === 'sms') {
+      if (!confirm(`Code "${c.name}" per SMS an ${c.phone} senden?`)) return;
+      btn.disabled = true;
+      try { const r = await api('/api/codes/' + id + '/sms', { method: 'POST' }); toast(`SMS an ${r.sms.to} gesendet`, 'ok'); }
+      catch (e) { toast(e.message, 'bad'); }
+      btn.disabled = false;
+      return;
+    }
     if (!confirm(`Code "${c.name}" löschen?`)) return;
     try { await api('/api/codes/' + id, { method: 'DELETE' }); toast('Gelöscht', 'ok'); await loadCodes(); }
     catch (e) { toast(e.message, 'bad'); }
@@ -393,15 +422,33 @@
       max_uses: d.type === 'onetime' ? 1 : (d.max_uses || 0),
       owner: isAdmin() ? Number(d.owner) : session.uid,
       shared: readShareChecks($('#code-share')),
-      grace_s: grace
+      grace_s: grace,
+      phone: (d.phone || '').trim(),
+      send_sms: !!d.send_sms
     };
+    if (body.send_sms && !body.phone) throw new Error('Für den SMS-Versand eine Telefonnummer eintragen');
     if (body.type === 'timed' && !body.valid_from && !body.valid_until) throw new Error('Zeitcode braucht "gültig ab" oder "gültig bis"');
     if (body.valid_from && body.valid_until && body.valid_from >= body.valid_until) throw new Error('"Gültig bis" muss nach "gültig ab" liegen');
-    if (d.id) await api('/api/codes/' + d.id, { method: 'PUT', json: body });
-    else await api('/api/codes', { method: 'POST', json: body });
-    toast('Gespeichert', 'ok');
+    const r = d.id ? await api('/api/codes/' + d.id, { method: 'PUT', json: body })
+                   : await api('/api/codes', { method: 'POST', json: body });
+    if (r.sms) toast(r.sms.ok ? `Gespeichert, SMS an ${r.sms.to} gesendet` : `Gespeichert, SMS fehlgeschlagen: ${r.sms.error}`, r.sms.ok ? 'ok' : 'bad');
+    else toast('Gespeichert', 'ok');
     $('#code-editor').classList.add('hidden');
     await loadCodes();
+  });
+  /* Zufallscode: Dauercode 6 Stellen, Zeit- und Einmalcode 8 Stellen (RANDOM_CODE_LEN) */
+  const RANDOM_CODE_LEN = { permanent: 6, timed: 8, onetime: 8 };
+  function randomCode(len) {
+    const buf = new Uint32Array(len);
+    crypto.getRandomValues(buf);
+    let s = '';
+    for (let i = 0; i < len; i++) s += String(buf[i] % 10);
+    return s;
+  }
+  $('#btn-code-random').addEventListener('click', () => {
+    const f = $('#form-code');
+    f.code.value = randomCode(RANDOM_CODE_LEN[f.type.value] || 6);
+    f.code.dispatchEvent(new Event('input', { bubbles: true }));
   });
 
   /* ---------- Protokoll ---------- */
@@ -430,6 +477,7 @@
     const r = [];
     if (u.edit_shared) r.push('Freigaben bearbeiten');
     if (u.open_doors) r.push('Türen öffnen');
+    if (u.view_log) r.push('Protokoll');
     if (u.twofa_enabled) r.push('2FA');
     return r.join(', ') || '–';
   }
@@ -444,6 +492,7 @@
       const adm = u.role === 'admin';
       return `<tr data-uid="${u.uid}">
         <td>${esc(u.name)}${u.uid === r.me ? ' <span class="hint">(ich)</span>' : ''}</td>
+        <td>${esc(u.org || '')}</td>
         <td>${adm ? '<span class="badge role">Admin</span>' : 'Benutzer'}</td>
         <td>${adm ? 'alle' : typesText(u.code_types)}</td>
         <td>${adm ? 'alle' : doorsText(u.doors)}</td>
@@ -463,7 +512,7 @@
     const f = $('#form-user');
     f.reset();
     $('#user-editor-title').textContent = u ? `Benutzer bearbeiten: ${u.name}` : 'Neuer Benutzer';
-    const data = u ? Object.assign({}, u) : { uid: '', name: '', role: 'user', enabled: true, must_change_pw: true, code_types: 7, doors: allEnabledMask() || 1, edit_shared: false, open_doors: false, max_codes: 0 };
+    const data = u ? Object.assign({}, u) : { uid: '', name: '', role: 'user', enabled: true, must_change_pw: true, code_types: 7, doors: allEnabledMask() || 1, edit_shared: false, open_doors: false, view_log: true, max_codes: 0, org: '' };
     fillForm(f, data);
     f.password.required = !u;
     $('#user-pw-row').classList.toggle('hidden', !!u);
@@ -518,7 +567,8 @@
     let types = 0;
     $$('#user-rights input[data-ct]').forEach(i => { if (i.checked) types |= 1 << Number(i.dataset.ct); });
     const body = { name: d.name.trim(), role: d.role, enabled: d.enabled, must_change_pw: d.must_change_pw, code_types: types,
-                   doors: readDoorChecks($('#user-doors')), edit_shared: d.edit_shared, open_doors: d.open_doors, max_codes: d.max_codes || 0 };
+                   doors: readDoorChecks($('#user-doors')), edit_shared: d.edit_shared, open_doors: d.open_doors, view_log: d.view_log, max_codes: d.max_codes || 0,
+                   org: (d.org || '').trim() };
     if (d.uid) {
       await api('/api/users/' + d.uid, { method: 'PUT', json: body });
     } else {
@@ -652,7 +702,7 @@ sensor:
   });
 
   /* ---------- Netzwerk ---------- */
-  let wifiPasswordSet = false;
+  let wifiPasswordSet = false, smsPasswordSet = false;
   async function loadNetwork() {
     const n = await api('/api/network');
     wifiPasswordSet = !!n.wifi_password_set;
@@ -805,6 +855,15 @@ sensor:
   }
   async function loadSystem() {
     const s = await api('/api/system');
+    const cc = s.codes || { grace_default_s: 0, sharing_enabled: true };
+    fillForm($('#form-codes-cfg'), { grace_default_s: cc.grace_default_s, sharing_enabled: cc.sharing_enabled,
+      grace_default_preset: [0, 30, 60, 120, 300, 600].includes(cc.grace_default_s) ? String(cc.grace_default_s) : 'custom' });
+    $('#codes-cfg-custom').classList.toggle('hidden', $('#form-codes-cfg').grace_default_preset.value !== 'custom');
+    smsPasswordSet = !!(s.sms && s.sms.password_set);
+    fillForm($('#form-sms'), s.sms || {});
+    $('#form-sms').password.value = '';
+    $('#form-sms').password.placeholder = smsPasswordSet ? 'unverändert lassen' : 'Passwort des API-Benutzers';
+    $('#sms-pw-hint').textContent = smsPasswordSet ? 'Ein Passwort ist gespeichert und wird nie angezeigt. Leer lassen, um es zu behalten.' : 'Noch kein Passwort gespeichert.';
     doorsBrief = s.doors.map(d => ({ door: d.door, name: d.name, enabled: d.enabled }));
     renderDoorForms(s.doors, s.relays || []);
     renderKeypadDoorSelect(s.doors, s.keypad.door);
@@ -839,6 +898,7 @@ sensor:
       rows.push(['Türen', doorsText(session.doors)]);
       rows.push(['Freigegebene Codes', session.perms.edit_shared ? 'voll bearbeiten' : 'nur ein-/ausschalten']);
       rows.push(['Türen per Web öffnen', session.perms.open_doors ? 'ja' : 'nein']);
+      rows.push(['Protokoll lesen', session.perms.view_log ? 'ja' : 'nein']);
       rows.push(['Eigenes Code-Limit', session.max_codes || 'keins']);
     }
     kv($('#account-info'), rows);
@@ -1033,8 +1093,38 @@ sensor:
   });
   onSubmit('#form-keypad', async (f) => {
     const k = formData(f); k.baud = Number(k.baud); k.parity = Number(k.parity); k.frame_mode = Number(k.frame_mode); k.door = Number(k.door);
+    k.close_presses = Number(k.close_presses) || 0;
+    if (k.close_presses === 1) throw new Error('Schließbefehl: mindestens 2 Tastendrücke oder 0 (aus)');
     await api('/api/system', { method: 'POST', json: { keypad: k } }); toast('Gespeichert', 'ok');
     await loadSystem();
+  });
+  onSubmit('#form-codes-cfg', async (f) => {
+    const d = formData(f);
+    const codes = { grace_default_s: d.grace_default_preset === 'custom' ? Number(d.grace_default_s) || 0 : Number(d.grace_default_preset), sharing_enabled: d.sharing_enabled };
+    await api('/api/system', { method: 'POST', json: { codes } });
+    toast('Gespeichert', 'ok');
+    await loadSystem();
+  });
+  $('#form-codes-cfg').addEventListener('change', () => {
+    const f = $('#form-codes-cfg');
+    $('#codes-cfg-custom').classList.toggle('hidden', f.grace_default_preset.value !== 'custom');
+    if (f.grace_default_preset.value !== 'custom') f.grace_default_s.value = f.grace_default_preset.value;
+  });
+  onSubmit('#form-sms', async (f) => {
+    const sms = formData(f);
+    if (!sms.password) delete sms.password;
+    await api('/api/system', { method: 'POST', json: { sms } });
+    toast('Gespeichert', 'ok');
+    await loadSystem();
+  });
+  $('#btn-sms-test').addEventListener('click', async () => {
+    const number = $('#sms-test-number').value.trim();
+    if (!number) { toast('Telefonnummer eingeben', 'bad'); return; }
+    const btn = $('#btn-sms-test');
+    btn.disabled = true; btn.textContent = 'Sende …';
+    try { await api('/api/system/sms-test', { method: 'POST', json: { number } }); toast(`Test-SMS an ${number} gesendet`, 'ok'); }
+    catch (e) { toast(e.message, 'bad'); }
+    btn.disabled = false; btn.textContent = 'Test-SMS senden';
   });
   onSubmit('#form-site', async (f) => {
     const site = formData(f);

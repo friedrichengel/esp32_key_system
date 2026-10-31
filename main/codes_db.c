@@ -10,6 +10,7 @@
 #include "esp_timer.h"
 
 #include "storage.h"
+#include "settings.h"
 #include "time_sync.h"
 #include "event_log.h"
 #include "users.h"
@@ -57,6 +58,7 @@ cJSON *codes_entry_to_json(const code_entry_t *e)
     cJSON_AddNumberToObject(o, "owner", e->owner_uid);
     cJSON_AddNumberToObject(o, "shared", e->shared);
     cJSON_AddNumberToObject(o, "grace_s", e->grace_s);
+    cJSON_AddStringToObject(o, "phone", e->phone);
     cJSON_AddNumberToObject(o, "grace_remaining_s", codes_grace_remaining_s(e));   /* nur lesend */
     return o;
 }
@@ -120,6 +122,7 @@ bool codes_entry_from_json(const cJSON *o, code_entry_t *e)
     e->shared = (uint32_t)jnum(o, "shared", 0);
     double g = jnum(o, "grace_s", 0);
     e->grace_s = (uint16_t)(g < 0 ? 0 : g > CFG_ONETIME_GRACE_MAX_S ? CFG_ONETIME_GRACE_MAX_S : g);
+    strlcpy(e->phone, js(o, "phone", ""), sizeof(e->phone));
     normalize(e);
     return codes_valid_code_string(e->code) && e->name[0];
 }
@@ -307,6 +310,7 @@ esp_err_t codes_clear(void)
 bool codes_visible_to(const code_entry_t *e, uint8_t uid, bool is_admin)
 {
     if (is_admin) return true;
+    if (!g_settings.codes.sharing_enabled) return true;      /* Freigaben aus: jeder sieht alle Codes */
     return e->owner_uid == uid || (uid && (e->shared & USERS_UID_BIT(uid)));
 }
 

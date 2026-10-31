@@ -47,6 +47,7 @@ typedef struct {
     uint8_t  owner_uid;            /* 0 = Admin, sonst Benutzer-uid */
     uint32_t shared;               /* Freigabe: Bit uid (1..CFG_USERS_MAX) */
     uint16_t grace_s;              /* Einmalcode: Nutzungsfenster nach erster Eingabe, 0 = einmal */
+    char     phone[24];            /* Telefonnummer fuer den SMS-Versand des Codes, leer = keine */
     int64_t  grace_until_us;       /* nur RAM (Laufzeituhr): Fensterende, 0 = kein Fenster aktiv */
 } code_entry_t;
 

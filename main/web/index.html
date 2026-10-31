@@ -12,7 +12,7 @@
   <nav id="nav" class="hidden">
     <a href="#dashboard">Übersicht</a>
     <a href="#codes">Codes</a>
-    <a href="#log" data-admin>Protokoll</a>
+    <a href="#log" data-log>Protokoll</a>
     <a href="#users" data-admin>Benutzer</a>
     <a href="#api" data-admin>API</a>
     <a href="#network" data-admin>Netzwerk</a>
@@ -100,7 +100,7 @@
         <div class="kv" id="dash-sys"></div>
       </div>
     </div>
-    <div class="card" data-admin>
+    <div class="card" data-log>
       <h3>Letzte Ereignisse</h3>
       <table class="log" id="dash-log"><tbody></tbody></table>
     </div>
@@ -111,18 +111,19 @@
     <div class="card">
       <div class="row" style="justify-content:space-between">
         <h2 style="margin:0">Zutrittscodes <span class="hint" id="codes-count"></span></h2>
-        <div class="row" style="margin:0">
-          <select id="codes-filter" data-admin>
+        <div class="row toolbar" style="margin:0">
+          <select id="codes-filter" class="col-share" data-admin>
             <option value="all">Alle Codes</option>
             <option value="mine">Meine Codes</option>
-            <option value="shared">Freigegebene Codes</option>
+            <option value="shared" class="col-share">Freigegebene Codes</option>
           </select>
+          <select id="codes-org" title="Nach Organisation des Besitzers filtern"></select>
           <button id="btn-code-new">Neuer Code</button>
         </div>
       </div>
       <p class="note warn hidden" id="codes-time-warn">⚠ Uhrzeit nicht synchron: Zeit- und Einmalcodes mit Gültigkeit werden derzeit abgelehnt, Dauercodes ohne Zeitfenster funktionieren.</p>
       <table class="log" id="codes-table">
-        <thead><tr><th>Name</th><th>Code</th><th>Typ</th><th>Türen</th><th>Gültigkeit</th><th>Nutzungen</th><th>Besitzer</th><th>Freigabe</th><th>Status</th><th></th></tr></thead>
+        <thead><tr><th>Name</th><th>Code</th><th>Typ</th><th>Türen</th><th>Gültigkeit</th><th>Nutzungen</th><th>Besitzer</th><th>Organisation</th><th class="col-share">Freigabe</th><th>Telefon</th><th>Status</th><th></th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
@@ -133,11 +134,16 @@
         <input type="hidden" name="id">
         <div class="grid2">
           <label>Name <input name="name" maxlength="31" required placeholder="z. B. Hausmeister"></label>
-          <label>Code <input name="code" minlength="4" maxlength="12" pattern="[A-Za-z0-9]{4,12}" required placeholder="4–12 Zeichen"></label>
+          <div class="field-row" style="margin:0"><label>Code <input name="code" minlength="4" maxlength="12" pattern="[A-Za-z0-9]{4,12}" required placeholder="4–12 Zeichen"></label>
+            <button type="button" class="secondary" id="btn-code-random" title="Zufallscode: Dauer-/Zeitcode 6 Stellen, Einmalcode 8 Stellen">Zufall</button></div>
           <label>Typ <select name="type"><option value="permanent">Dauercode</option><option value="timed">Zeitcode (von/bis)</option><option value="onetime">Einmalcode</option></select></label>
           <label id="code-owner-row" data-admin>Besitzer <select name="owner"></select></label>
+          <label>Telefonnummer (für SMS) <input name="phone" maxlength="23" pattern="\+?[0-9 -]{6,23}" placeholder="z. B. +49 170 1234567" autocomplete="off"></label>
         </div>
-        <label><input type="checkbox" name="enabled" checked> Aktiv</label>
+        <div class="row">
+          <label><input type="checkbox" name="enabled" checked> Aktiv</label>
+          <label id="code-sms-row" class="hidden"><input type="checkbox" name="send_sms"> Code nach dem Speichern per SMS an diese Nummer senden</label>
+        </div>
         <fieldset><legend>Türen</legend>
           <div class="row" id="code-doors"></div>
           <p class="hint">Am Keypad öffnet ein Code nur die dem Keypad zugeordnete Tür; über Web-UI und API gelten die hier gewählten Türen.</p>
@@ -224,7 +230,7 @@
       </div>
       <p class="hint">Benutzer sehen nur Codes, die sie selbst angelegt haben oder die ihnen freigegeben wurden. Der Admin sieht und bearbeitet alles. Das Hauptkonto <strong id="users-admin-name"></strong> liegt im Gerät und erscheint hier nicht.</p>
       <table class="log" id="users-table">
-        <thead><tr><th>Name</th><th>Rolle</th><th>Code-Typen</th><th>Türen</th><th>Rechte</th><th>Codes</th><th>Angelegt</th><th>Letzter Login</th><th>Status</th><th></th></tr></thead>
+        <thead><tr><th>Name</th><th>Organisation</th><th>Rolle</th><th>Code-Typen</th><th>Türen</th><th>Rechte</th><th>Codes</th><th>Angelegt</th><th>Letzter Login</th><th>Status</th><th></th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
@@ -232,8 +238,9 @@
       <h3 id="user-editor-title">Neuer Benutzer</h3>
       <form id="form-user">
         <input type="hidden" name="uid">
-        <div class="grid2">
+        <div class="grid2 tight">
           <label>Name <input name="name" maxlength="31" required autocomplete="off" placeholder="z. B. mueller"></label>
+          <label>Organisation (nur Anzeige) <input name="org" maxlength="31" autocomplete="off" placeholder="z. B. Firma Muster"></label>
           <label id="user-pw-row">Startpasswort <input name="password" type="password" minlength="8" autocomplete="new-password" placeholder="mind. 8 Zeichen"></label>
           <label>Rolle <select name="role"><option value="user">Benutzer</option><option value="admin">Administrator (alle Rechte)</option></select></label>
           <label>Eigene Codes max. (0 = kein Limit) <input name="max_codes" type="number" min="0" max="200" value="0"></label>
@@ -254,6 +261,7 @@
           <fieldset><legend>Weitere Rechte</legend>
             <label><input type="checkbox" name="edit_shared"> Freigegebene Codes anderer Benutzer voll bearbeiten (sonst nur ein-/ausschalten)</label>
             <label><input type="checkbox" name="open_doors"> Türen über die Webseite öffnen (Rolltore: Auf und Ab)</label>
+            <label><input type="checkbox" name="view_log" checked> Protokoll lesen</label>
           </fieldset>
         </div>
         <div class="row">
@@ -449,6 +457,8 @@
         <label>Löschtaste <select name="clear_key"><option value="BS">BS (X, 0x08)</option><option value="*">*</option><option value="#">#</option><option value="none">keine</option></select></label>
         <label>Feste Länge <input name="fixed_len" type="number" min="4" max="12"></label>
         <label>Timeout (ms) <input name="timeout_ms" type="number" min="200" max="10000" step="100"></label>
+        <label>Rolltor schließen: Löschtaste so oft hintereinander drücken (0 = aus) <input name="close_presses" type="number" min="0" max="6"></label>
+        <p class="hint">Ohne Code: Wird die Löschtaste (X) bei leerer Eingabe so oft innerhalb von 3 s gedrückt, fährt das zugeordnete Rolltor ab. Bei einem Türöffner passiert nichts. Werte 2 bis 6, 0 schaltet den Befehl ab.</p>
         <label><input type="checkbox" name="learn_mode"> Lernmodus (Rohdaten anzeigen)</label>
         <button type="submit">Speichern</button>
       </form>
@@ -461,6 +471,27 @@
       </div>
     </div>
     <div class="card">
+      <h2>Zutrittscodes: Vorgaben</h2>
+      <form id="form-codes-cfg">
+        <div class="grid2">
+          <label>Einmalcode: Nutzungsdauer nach der ersten Eingabe (Vorgabe für neue Codes) <select name="grace_default_preset">
+            <option value="0">sofort verbraucht (genau eine Eingabe)</option>
+            <option value="30">30 Sekunden</option>
+            <option value="60">1 Minute</option>
+            <option value="120">2 Minuten</option>
+            <option value="300">5 Minuten</option>
+            <option value="600">10 Minuten</option>
+            <option value="custom">anderer Wert …</option>
+          </select></label>
+          <label id="codes-cfg-custom">Sekunden (0–600) <input name="grace_default_s" type="number" min="0" max="600" value="0"></label>
+        </div>
+        <p class="hint">Der Wert wird beim Anlegen eines Einmalcodes vorbelegt und kann dort je Code geändert werden.</p>
+        <label><input type="checkbox" name="sharing_enabled"> Freigabe von Codes an einzelne Benutzer</label>
+        <p class="hint">Eingeschaltet: Benutzer sehen nur eigene und ihnen freigegebene Codes. Ausgeschaltet: alle Codes sind für alle Benutzer sichtbar; ob sie fremde Codes bearbeiten dürfen, regelt weiter das Benutzerrecht „Freigegebene Codes voll bearbeiten“, sonst nur ein-/ausschalten.</p>
+        <button type="submit">Speichern</button>
+      </form>
+    </div>
+    <div class="card">
       <h2>Anlage und Betreuer</h2>
       <p class="note warn">⚠ Diese Angaben stehen auf der Anmeldeseite und sind für jeden sichtbar, der das Gerät im Netz erreicht. Nichts eintragen, was nicht öffentlich sein darf.</p>
       <form id="form-site">
@@ -471,8 +502,28 @@
       </form>
     </div>
     <div class="card">
+      <h2>SMS-Versand über Mobilfunkrouter</h2>
+      <p class="hint">Ab Werk aus. Schickt Zutrittscodes per SMS an die beim Code hinterlegte Telefonnummer, über die REST-API eines Teltonika-Routers (RutOS 7.x, z. B. RUT956). Auf dem Router einen eigenen API-Benutzer mit dem Recht „Messages (SMS)“ anlegen. Die SMS enthält den Code im Klartext.</p>
+      <form id="form-sms">
+        <label><input type="checkbox" name="enabled"> SMS-Versand aktivieren</label>
+        <div class="grid2">
+          <label>Router-Adresse <input name="url" maxlength="95" placeholder="https://192.168.1.1"></label>
+          <label>API-Benutzer <input name="user" maxlength="31" autocomplete="off"></label>
+          <label>Passwort <input name="password" type="password" maxlength="63" autocomplete="new-password"></label>
+          <label>Modem-Kennung <input name="modem" maxlength="15" placeholder="1-1"></label>
+        </div>
+        <label><input type="checkbox" name="verify_tls"> Router-Zertifikat prüfen (nur mit öffentlich gültigem Zertifikat)</label>
+        <p class="hint" id="sms-pw-hint"></p>
+        <button type="submit">Speichern</button>
+      </form>
+      <div class="field-row">
+        <label>Test-SMS an <input id="sms-test-number" maxlength="23" placeholder="+49 170 1234567"></label>
+        <button type="button" class="secondary" id="btn-sms-test">Test-SMS senden</button>
+      </div>
+    </div>
+    <div class="card">
       <h2>Sicherung</h2>
-      <p class="hint">Enthält Netzwerk-, Tür-, Keypad- und Anlageneinstellungen, alle Benutzer (mit Passwort-Hash und 2FA) sowie alle Codes. Admin-Passwort, API-Token, Zertifikat und Key sind nicht enthalten. Die Datei enthält Zutrittscodes im Klartext, entsprechend sicher aufbewahren.</p>
+      <p class="hint">Enthält Netzwerk-, WLAN-, SMS-, Tür-, Keypad- und Anlageneinstellungen (mit WLAN- und Router-Passwort), alle Benutzer (mit Passwort-Hash und 2FA) sowie alle Codes. Admin-Passwort, API-Token, Zertifikat und Key sind nicht enthalten. Die Datei enthält Zutrittscodes im Klartext, entsprechend sicher aufbewahren.</p>
       <div class="row">
         <a class="button secondary" href="/api/backup" download>Backup herunterladen</a>
         <input type="file" id="file-restore" accept=".json,application/json">

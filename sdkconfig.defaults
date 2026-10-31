@@ -71,6 +71,10 @@ CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
 CONFIG_HTTPD_MAX_URI_LEN=512
 CONFIG_HTTPD_WS_SUPPORT=y
 CONFIG_ESP_TLS_SERVER_SESSION_TICKETS=y
+# HTTPS-Client zum Mobilfunkrouter (SMS-Versand): Router haben meist selbstsignierte Zertifikate,
+# die Pruefung ist deshalb je Einstellung abschaltbar (sms.verify_tls, Default aus).
+CONFIG_ESP_TLS_INSECURE=y
+CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY=y
 # Selbstsigniertes Zertifikat zur Laufzeit erzeugen:
 # X.509-Create/Write sind in IDF 6.1 per Default AUS und müssen explizit an.
 CONFIG_MBEDTLS_X509_CREATE_C=y

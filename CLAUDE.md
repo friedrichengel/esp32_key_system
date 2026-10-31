@@ -54,7 +54,7 @@ main/
 │                       (Rechte je Request frisch aus Admin/users.json), 2FA je Benutzer: TOTP (HMAC-SHA1 via PSA,
 │                       ±1 Schritt, Replay-Schutz) + 8 Recovery-Codes; Pre-Auth-Tickets; STRENG: ohne Zeit nur Recovery
 ├── users.[ch]          bis zu CFG_USERS_MAX Benutzer (uid 1..16) in /storage/users.json: Hash, Rolle, erlaubte
-│                       Code-Typen, Türmaske, Rechte (edit_shared, open_doors), Kontingent, Startpasswort, eigene 2FA
+│                       Code-Typen, Türmaske, Rechte (edit_shared, open_doors, view_log), Kontingent, Startpasswort, eigene 2FA
 ├── web_server.[ch]     esp_https_server + Redirect-Server :80, REST-API, statische Dateien (gzip)
 ├── codes_db.[ch]       Codes als /storage/codes.json, Prüfung (Gültigkeit, Fenster, Nutzungen), owner_uid +
 │                       Freigabemaske shared (Bit uid), Einmalcode-Nutzungsfenster grace_s (Laufzeituhr, nur RAM)
@@ -64,7 +64,10 @@ main/
 │                       door_settings_check() verbietet Doppelbelegung eines Relais durch aktive Türen
 ├── api_tokens.[ch]     Bearer-Token für Drittsysteme: SHA-256-Hash in /storage/tokens.json, Türmaske, Rechte,
 │                       IP-Regel, Ablauf, Rate-Limit je Quell-IP; Klartext nur einmal bei Erzeugung
-├── access.[ch]         Keypad-Code → codes_check (Tür des Keypads) → door_open, Sperre nach Fehlversuchen
+├── sms_gateway.[ch]    SMS-Versand über Teltonika-RutOS-REST-API (Login + messages/actions/send), g_settings.sms,
+│                       Codes haben dafür ein Feld phone; SMS-Text nie protokollieren
+├── access.[ch]         Keypad-Code → codes_check (Tür des Keypads) → door_open, Sperre nach Fehlversuchen;
+│                       Schließbefehl (Löschtaste n-mal, keypad_ext.close_presses) → door_close auf dem Rolltor
 ├── ota_update.[ch]     esp_ota_* mit Signaturprüfung, Rollback, Info
 └── web/                index.html, app.js, style.css (Vanilla, deutsch), qrcode.js (vendored, MIT, Kazuhiko Arase)
 tools/                  embed_web_assets.py, pio_pre_build.py, sign_firmware.py, gen_signing_key.sh, sign_firmware.sh
@@ -93,7 +96,7 @@ keys/                   nur .gitkeep; private Schlüssel lokal
 - Türen: intern Index 0..CFG_MAX_DOORS-1, in API/UI/Protokoll 1-basiert. Genau ein Keypad je Gerät (`g_settings.keypad.door`). Türtyp und Rolltor-Relais stehen in `g_settings.door_ext[]` (eigenes Array ab v5, damit `doors[]` unverändert bleibt); die Relais-Pins sind ein Pool, Türöffner i nutzt fest Relais i.
 - Deutsch in UI und Protokolltexten, ASCII-Umschreibungen (ue/oe/ae) in Log-Strings, Umlaute in HTML.
 - Compiler-Warnungen sind Fehler (`-Werror` im IDF-Default), insbesondere `format-truncation`.
-- `SETTINGS_VERSION` bei Strukturänderungen am NVS-Blob erhöhen (Stand v6). Migration läuft über die Tabelle `s_old_layouts` in `settings.c` (Ende der Nutzdaten je alter Version), dort die bisherige Version eintragen. Neue Felder **nur am Ende** von `settings_t` anhängen und in `settings_migrate()` den alten Blob als Präfix übernehmen, sonst fällt das Gerät auf Defaults zurück.
+- `SETTINGS_VERSION` bei Strukturänderungen am NVS-Blob erhöhen (Stand v9). Migration läuft über die Tabelle `s_old_layouts` in `settings.c` (Ende der Nutzdaten je alter Version), dort die bisherige Version eintragen. Neue Felder **nur am Ende** von `settings_t` anhängen und in `settings_migrate()` den alten Blob als Präfix übernehmen, sonst fällt das Gerät auf Defaults zurück.
 - Neue Web-Dateien in `main/CMakeLists.txt` (WEB_FILES), `tools/pio_pre_build.py` (FILES) und als Route in `web_server.c` eintragen.
 
 ## Stand

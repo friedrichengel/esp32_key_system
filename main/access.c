@@ -107,8 +107,27 @@ void access_on_keypad_code(const char *code)
     door_open(door, m.name, 0);
 }
 
+/* Schliessbefehl vom Keypad (Loeschtaste n-mal): zugeordnetes Rolltor faehrt ab, auch waehrend
+ * einer Sperre (Schliessen ist kein Sicherheitsrisiko). Bei einem Tueroeffner nur Protokoll. */
+static void access_on_keypad_close(void)
+{
+    int door = access_keypad_door();
+    if (!door_is_enabled(door)) {
+        event_log(EV_DENIED, "Keypad-Schliessbefehl: zugeordnete Tuer %d ist deaktiviert", door + 1);
+        return;
+    }
+    if (!door_is_gate(door)) {
+        event_log(EV_SYSTEM, "Keypad-Schliessbefehl ignoriert: Tuer %d ist kein Rolltor", door + 1);
+        return;
+    }
+    event_log(EV_ACCESS, "Rolltor %d: Fahrt ab per Keypad (%ux Loeschtaste)", door + 1,
+              (unsigned)g_settings.keypad_ext.close_presses);
+    door_close(door, "Keypad Schliessbefehl", 0);
+}
+
 esp_err_t access_init(void)
 {
+    keypad_set_close_cb(access_on_keypad_close);
     esp_err_t err = door_init();
     if (err != ESP_OK) {
         event_log(EV_SYSTEM, "Relais-Init fehlgeschlagen: %s", esp_err_to_name(err));

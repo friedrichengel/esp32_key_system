@@ -195,6 +195,10 @@ Speicherung: NVS-Namespace `codes`, bis ~200 Einträge, Codes im Klartext. Ehrli
 
 **Zutritt per SMS (31.10.2026):** `GET/POST /api/v1/sms` nimmt die SMS-Weiterleitung eines Mobilfunkrouters (Teltonika RUT956 „SMS Forwarding To HTTP“) an: Felder `number`, `text`, `token` (Bearer-Token als Extra data pair, da der Router keine Header setzen kann), optional `base64`. SMS-Text `<Code> [Tür] [auf|ab|stop]`; der Code wird wie am Keypad über `codes_check_and_use()` geprüft und verbraucht. Schutz: Token mit Türmaske und IP-Regel auf den Router, Absenderliste im Router, falsche Codes zählen auf das Token-Rate-Limit der Router-IP. Keine Antwort-SMS (Router-REST-API mit Login wäre nötig, Teltonika hat `/cgi-bin/sms_send` ab RutOS 7.14 entfernt).
 
+**Codes per SMS verschicken (31.10.2026):** Jeder Code hat optional eine Telefonnummer (`phone`). Beim Anlegen/Bearbeiten (`send_sms: true`) oder per Button „SMS“ in der Code-Tabelle (`POST /api/codes/<id>/sms`) schickt das Gerät den Code über die REST-API eines Teltonika-Routers: `POST <url>/api/login` (Token 5 min gültig) und `POST <url>/api/messages/actions/send` (`sms_gateway.c`, Settings v7 `sms`: URL, API-Benutzer, Passwort, Modem-Kennung, Zertifikatsprüfung optional). Text: „<Anlage>: Zugangscode 123456 (Tür 1), bis 05.11.2026 18:00“. Der Text wird nie protokolliert. „Zufall“-Button im Code-Editor: Dauer-/Zeitcode 6 Stellen, Einmalcode 8 Stellen (`RANDOM_CODE_LEN` in app.js, `crypto.getRandomValues`).
+
+**Code-Vorgaben (31.10.2026, Settings v8 `codes`):** Standard-Nutzungsfenster neuer Einmalcodes (`grace_default_s`, im Code-Fenster je Code änderbar) und Schalter `sharing_enabled`: aus = alle Codes für alle Benutzer sichtbar (Freigabe-Spalte und -Dialog ausgeblendet; Bearbeiten fremder Codes weiter je `edit_shared`). Code-Editor zeigt nur aktive Türen. Zufallscode: Dauercode 6, Zeit- und Einmalcode 8 Stellen.
+
 **API-Token (Hausautomation / Home Assistant)**
 
 - **Format** `ks1.<id>.<secret>`: `ks1` = Präfix/Version (erkennbar in Logs und Secret-Scannern), `id` = 6 Byte Zufall als Base64url (8 Zeichen, nur zum Nachschlagen, darf im Protokoll stehen), `secret` = **32 Byte = 256 Bit** Zufall als Base64url (43 Zeichen). Gesamt 55 Zeichen.
@@ -251,6 +255,7 @@ Speicherung: NVS-Namespace `codes`, bis ~200 Einträge, Codes im Klartext. Ehrli
 - API: `/api/door/close` (Session + CSRF, Recht `open_doors`), `/api/v1/doors/<n>/close` (Bearer, `can_open`); Status liefert `kind`, `direction`, `last_direction`; `/api/system` liefert `kind`, `relay_up`, `relay_down`, `relays[]`.
 - UI: Typ und Relaisauswahl je Tür unter System → Türen und Relais, Übersicht zeigt beim Rolltor „Auf“/„Ab“-Buttons und den letzten Fahrbefehl.
 - **Stopp** (31.10.2026): `door_stop()` beendet den laufenden Impuls sofort (Relais fällt ab), `/api/door/stop` und `/api/v1/doors/<n>/stop`, dritter Button auf der Karte. Nur die Relais-Ansteuerung endet; ob das Tor stehen bleibt, entscheidet die Torsteuerung (viele brauchen dafür einen eigenen Stopp-Eingang, dann wäre ein drittes Relais nötig).
+- **Schließbefehl am Keypad** (31.10.2026, Settings v9 `keypad_ext.close_presses`, Default 3): Löschtaste bei leerer Eingabe n-mal innerhalb von `CFG_KEYPAD_CLOSE_WINDOW_MS` (3 s) → `door_close()` auf dem zugeordneten Rolltor, auch während einer Keypad-Sperre (Schließen ist unkritisch). Bei einem Türöffner nur Protokolleintrag. Parser in `keypad_rs232.c` (`keypad_set_close_cb`), Logik in `access.c`.
 - Offen: auf Hardware mit echter Torsteuerung testen; evtl. Keypad-Code als Auf/Ab-Wechsel.
 
 ---

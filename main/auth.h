@@ -34,7 +34,8 @@
 /* Rechte eines Benutzers (Admin hat immer alle) */
 #define USER_PERM_EDIT_SHARED  (1u << 0)   /* freigegebene Codes voll bearbeiten        */
 #define USER_PERM_OPEN_DOORS   (1u << 1)   /* Türen per Web-UI öffnen (nur Türmaske)   */
-#define USER_PERM_ALL          (USER_PERM_EDIT_SHARED | USER_PERM_OPEN_DOORS)
+#define USER_PERM_VIEW_LOG     (1u << 2)   /* Protokoll lesen (Default an)              */
+#define USER_PERM_ALL          (USER_PERM_EDIT_SHARED | USER_PERM_OPEN_DOORS | USER_PERM_VIEW_LOG)
 #define USER_TYPES_ALL         0x07        /* Bit = code_type_t: Dauer, Zeit, Einmal     */
 
 /* Wer gerade handelt – aus Session + aktuellen Benutzerdaten abgeleitet */

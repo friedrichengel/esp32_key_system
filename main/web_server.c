@@ -32,6 +32,7 @@
 #include "access.h"
 #include "ota_update.h"
 #include "api_tokens.h"
+#include "sms_gateway.h"
 
 #include <strings.h>
 #include "lwip/sockets.h"
@@ -152,6 +153,7 @@ static bool jbool(const cJSON *o, const char *key, bool dflt)
     return cJSON_IsBool(i) ? cJSON_IsTrue(i) : dflt;
 }
 
+static void trim(char *s);
 static void copy_str(char *dst, size_t dst_len, const char *src)
 {
     strlcpy(dst, src ? src : "", dst_len);
@@ -552,6 +554,7 @@ static cJSON *keypad_to_json(const settings_keypad_t *k)
     cJSON_AddNumberToObject(o, "timeout_ms", k->timeout_ms);
     cJSON_AddBoolToObject(o, "learn_mode", k->learn_mode);
     cJSON_AddNumberToObject(o, "door", k->door + 1);
+    cJSON_AddNumberToObject(o, "close_presses", g_settings.keypad_ext.close_presses);
     return o;
 }
 
@@ -570,6 +573,8 @@ static void keypad_from_json(const cJSON *k, settings_keypad_t *s)
     int to = jint(k, "timeout_ms", s->timeout_ms);
     if (to >= 200 && to <= 10000) s->timeout_ms = to;
     s->learn_mode = jbool(k, "learn_mode", s->learn_mode);
+    int cp = jint(k, "close_presses", g_settings.keypad_ext.close_presses);
+    if (cp == 0 || (cp >= 2 && cp <= CFG_KEYPAD_CLOSE_PRESSES_MAX)) g_settings.keypad_ext.close_presses = (uint8_t)cp;
     int dn = jint(k, "door", s->door + 1);
     if (dn >= 1 && dn <= CFG_MAX_DOORS) s->door = (uint8_t)(dn - 1);
 }
@@ -593,6 +598,108 @@ static bool valid_email_or_empty(const char *e)
         if ((unsigned char)*p <= 0x20 || *p == '<' || *p == '>' || *p == '"') return false;
     }
     return strchr(at + 1, '.') != NULL;
+}
+
+static cJSON *codes_cfg_to_json(const settings_codes_t *c)
+{
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddNumberToObject(o, "grace_default_s", c->grace_default_s);
+    cJSON_AddBoolToObject(o, "sharing_enabled", c->sharing_enabled);
+    return o;
+}
+
+static void codes_cfg_from_json(const cJSON *j, settings_codes_t *c)
+{
+    int g = jint(j, "grace_default_s", c->grace_default_s);
+    if (g < 0) g = 0;
+    if (g > CFG_ONETIME_GRACE_MAX_S) g = CFG_ONETIME_GRACE_MAX_S;
+    c->grace_default_s = (uint16_t)g;
+    c->sharing_enabled = jbool(j, "sharing_enabled", c->sharing_enabled);
+}
+
+static cJSON *sms_to_json(const settings_sms_t *s, bool with_password)
+{
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddBoolToObject(o, "enabled", s->enabled);
+    cJSON_AddStringToObject(o, "url", s->url);
+    cJSON_AddStringToObject(o, "user", s->user);
+    cJSON_AddBoolToObject(o, "password_set", s->password[0] != 0);
+    if (with_password) cJSON_AddStringToObject(o, "password", s->password);
+    cJSON_AddStringToObject(o, "modem", s->modem);
+    cJSON_AddBoolToObject(o, "verify_tls", s->verify_tls);
+    return o;
+}
+
+/* password: fehlt/leer = unveraendert. Fehlertext oder NULL. */
+static const char *sms_from_json(const cJSON *j, settings_sms_t *s)
+{
+    s->enabled = jbool(j, "enabled", s->enabled);
+    copy_str(s->url, sizeof(s->url), jstr(j, "url", s->url));
+    copy_str(s->user, sizeof(s->user), jstr(j, "user", s->user));
+    copy_str(s->modem, sizeof(s->modem), jstr(j, "modem", s->modem));
+    s->verify_tls = jbool(j, "verify_tls", s->verify_tls);
+    const char *pw = jstr(j, "password", NULL);
+    if (pw && pw[0]) copy_str(s->password, sizeof(s->password), pw);
+    size_t n = strlen(s->url);
+    while (n && s->url[n - 1] == '/') s->url[--n] = 0;           /* ohne Slash am Ende */
+    if (s->enabled) {
+        if (strncmp(s->url, "http://", 7) != 0 && strncmp(s->url, "https://", 8) != 0) return "Router-Adresse muss mit http:// oder https:// beginnen";
+        if (!s->user[0]) return "API-Benutzer des Routers fehlt";
+        if (!s->password[0]) return "Passwort des Router-Benutzers fehlt";
+    }
+    return NULL;
+}
+
+/* SMS-Text fuer einen Code: Anlage, Code, Tueren, Gueltigkeit */
+static void sms_code_text(const code_entry_t *e, char *buf, size_t len)
+{
+    const char *site = g_settings.site.name[0] ? g_settings.site.name : g_settings.net.hostname;
+    size_t n = snprintf(buf, len, "%s: Zugangscode %s", site, e->code);
+    char doors[96] = "";
+    for (int i = 0; i < CFG_MAX_DOORS && n < len; i++) {
+        if (!(e->doors & (1u << i)) || !door_is_enabled(i)) continue;
+        size_t dl = strlen(doors);
+        snprintf(doors + dl, sizeof(doors) - dl, "%s%s", dl ? ", " : "", door_name(i));
+    }
+    if (doors[0] && n < len) n += snprintf(buf + n, len - n, " (%s)", doors);
+    if (n < len && e->type == CODE_TYPE_ONETIME) {
+        n += snprintf(buf + n, len - n, ", einmalig");
+    }
+    char t[24];
+    if (n < len && e->valid_from) {
+        time_sync_format_local((time_t)e->valid_from, t, sizeof(t));
+        n += snprintf(buf + n, len - n, ", ab %s", t);
+    }
+    if (n < len && e->valid_until) {
+        time_sync_format_local((time_t)e->valid_until, t, sizeof(t));
+        n += snprintf(buf + n, len - n, ", bis %s", t);
+    }
+}
+
+/* Code per SMS an seine Telefonnummer schicken; JSON-Ergebnis {ok, to, error} fuer die Antwort */
+static cJSON *sms_send_code(const code_entry_t *e, const auth_principal_t *p)
+{
+    cJSON *r = cJSON_CreateObject();
+    char err[128] = "";
+    esp_err_t res;
+    if (!e->phone[0]) {
+        res = ESP_ERR_INVALID_ARG;
+        strlcpy(err, "Keine Telefonnummer beim Code hinterlegt", sizeof(err));
+    } else {
+        char text[CFG_SMS_TEXT_MAX];
+        sms_code_text(e, text, sizeof(text));
+        res = sms_gateway_send(e->phone, text, err, sizeof(err));
+        memset(text, 0, sizeof(text));
+    }
+    cJSON_AddBoolToObject(r, "ok", res == ESP_OK);
+    cJSON_AddStringToObject(r, "to", e->phone);
+    if (res == ESP_OK) {
+        event_log(EV_CONFIG, "Code '%s' (#%" PRIu32 ") per SMS an %s gesendet von %s", e->name, e->id, e->phone, p->name);
+    } else {
+        cJSON_AddStringToObject(r, "error", err);
+        event_log(EV_SYSTEM, "SMS mit Code '%s' an %s fehlgeschlagen (%s): %s", e->name, e->phone, p->name, err);
+    }
+    return r;
 }
 
 static const char *site_from_json(const cJSON *j, settings_site_t *s)
@@ -653,6 +760,7 @@ static void principal_to_json(cJSON *o, const auth_session_t *s, const auth_prin
     cJSON *perms = cJSON_AddObjectToObject(o, "perms");
     cJSON_AddBoolToObject(perms, "edit_shared", (p->perms & USER_PERM_EDIT_SHARED) != 0);
     cJSON_AddBoolToObject(perms, "open_doors", (p->perms & USER_PERM_OPEN_DOORS) != 0);
+    cJSON_AddBoolToObject(perms, "view_log", (p->perms & USER_PERM_VIEW_LOG) != 0);
     cJSON_AddNumberToObject(o, "max_codes", p->max_codes);
     cJSON_AddBoolToObject(o, "must_change_pw", p->must_change_pw);
 }
@@ -1223,7 +1331,10 @@ static esp_err_t h_cert_regenerate(httpd_req_t *req)
 static esp_err_t h_log_get(httpd_req_t *req)
 {
     req_auth_t a;
-    if (!require_admin(req, &a)) return ESP_OK;
+    if (!require_auth(req, &a)) return ESP_OK;
+    if (!a.p.is_admin && !(a.p.perms & USER_PERM_VIEW_LOG)) {
+        return send_error(req, "403 Forbidden", "Kein Recht, das Protokoll zu lesen");
+    }
     char val[16] = {0};
     uint32_t after = 0;
     int max = 100;
@@ -1272,6 +1383,7 @@ static cJSON *users_brief_json(void)
             cJSON *u = cJSON_CreateObject();
             cJSON_AddNumberToObject(u, "uid", list[i].uid);
             cJSON_AddStringToObject(u, "name", list[i].name);
+            cJSON_AddStringToObject(u, "org", list[i].org);
             cJSON_AddBoolToObject(u, "enabled", list[i].enabled);
             cJSON_AddBoolToObject(u, "admin", list[i].role == USER_ROLE_ADMIN);
             cJSON_AddItemToArray(arr, u);
@@ -1292,6 +1404,9 @@ static esp_err_t h_codes_get(httpd_req_t *req)
     cJSON_AddNumberToObject(o, "owned", codes_count_owned(a.p.uid));
     cJSON_AddNumberToObject(o, "grace_max_s", CFG_ONETIME_GRACE_MAX_S);
     cJSON_AddBoolToObject(o, "time_valid", time_sync_is_valid());
+    cJSON_AddBoolToObject(o, "sms_enabled", sms_gateway_enabled());
+    cJSON_AddNumberToObject(o, "grace_default_s", g_settings.codes.grace_default_s);
+    cJSON_AddBoolToObject(o, "sharing_enabled", g_settings.codes.sharing_enabled);
     cJSON_AddItemToObject(o, "doors", doors_brief_json());
     cJSON_AddItemToObject(o, "users", users_brief_json());
     return send_json(req, o);
@@ -1325,7 +1440,8 @@ static const char *code_rules(const auth_principal_t *p, const code_entry_t *bef
         return NULL;
     }
     bool owner = before ? (before->owner_uid == p->uid) : true;
-    bool shared = before && (before->shared & USERS_UID_BIT(p->uid));
+    /* Freigaben aus: jeder fremde Code gilt als freigegeben (Bearbeiten je nach edit_shared) */
+    bool shared = before && (!g_settings.codes.sharing_enabled || (before->shared & USERS_UID_BIT(p->uid)));
     if (before && !owner && !shared) return "Kein Zugriff auf diesen Code";
     if (before && !owner && !(p->perms & USER_PERM_EDIT_SHARED)) {
         /* Nur sehen und ein-/ausschalten */
@@ -1356,8 +1472,10 @@ static esp_err_t h_codes_post(httpd_req_t *req)
     if (!j) return send_error(req, "400 Bad Request", "JSON erwartet");
     code_entry_t e;
     bool ok = codes_entry_from_json(j, &e);
+    bool send_sms = jbool(j, "send_sms", false);
     cJSON_Delete(j);
     if (!ok) return codes_err_response(req, ESP_ERR_INVALID_ARG);
+    if (e.phone[0] && !sms_gateway_valid_number(e.phone)) return send_error(req, "400 Bad Request", "Telefonnummer ungueltig");
     const char *rule = code_rules(&a.p, NULL, &e);
     if (rule) return send_error(req, "403 Forbidden", rule);
     if (!a.p.is_admin && a.p.max_codes && codes_count_owned(a.p.uid) >= a.p.max_codes) {
@@ -1370,6 +1488,7 @@ static esp_err_t h_codes_post(httpd_req_t *req)
         cJSON *o = cJSON_CreateObject();
         cJSON_AddBoolToObject(o, "ok", true);
         cJSON_AddNumberToObject(o, "id", e.id);
+        if (send_sms) cJSON_AddItemToObject(o, "sms", sms_send_code(&e, &a.p));
         return send_json(req, o);
     }
     return codes_err_response(req, err);
@@ -1388,16 +1507,54 @@ static esp_err_t h_codes_put(httpd_req_t *req)
     if (!j) return send_error(req, "400 Bad Request", "JSON erwartet");
     code_entry_t e;
     bool ok = codes_entry_from_json(j, &e);
+    bool send_sms = jbool(j, "send_sms", false);
     cJSON_Delete(j);
     if (!ok) return codes_err_response(req, ESP_ERR_INVALID_ARG);
+    if (e.phone[0] && !sms_gateway_valid_number(e.phone)) return send_error(req, "400 Bad Request", "Telefonnummer ungueltig");
     e.id = id;
     const char *rule = code_rules(&a.p, &before, &e);
     if (rule) return send_error(req, "403 Forbidden", rule);
     esp_err_t err = codes_update(&e);
     if (err == ESP_OK) {
         log_code_change(e.enabled == before.enabled ? "geaendert" : (e.enabled ? "eingeschaltet" : "ausgeschaltet"), &e, &a.p);
+        if (send_sms) {
+            cJSON *o = cJSON_CreateObject();
+            cJSON_AddBoolToObject(o, "ok", true);
+            cJSON_AddItemToObject(o, "sms", sms_send_code(&e, &a.p));
+            return send_json(req, o);
+        }
     }
     return codes_err_response(req, err);
+}
+
+/* POST /api/codes/<id>/sms: Code erneut per SMS an die hinterlegte Nummer schicken.
+ * Erlaubt fuer Admin, Besitzer und freigegebene Benutzer mit Bearbeitungsrecht. */
+static esp_err_t h_codes_action_post(httpd_req_t *req)
+{
+    req_auth_t a;
+    if (!require_auth_csrf(req, &a)) return ESP_OK;
+    char path[CONFIG_HTTPD_MAX_URI_LEN + 1];
+    uri_path(req, path, sizeof(path));
+    const char *p = strstr(path, "/api/codes/");
+    if (!p) return send_error(req, "404 Not Found", "Unbekannter Pfad");
+    char *end = NULL;
+    uint32_t id = (uint32_t)strtoul(p + 11, &end, 10);
+    if (!end || strcmp(end, "/sms") != 0) return send_error(req, "404 Not Found", "Unbekannte Aktion, erwartet /api/codes/<id>/sms");
+    code_entry_t e;
+    if (!codes_get(id, &e) || !codes_visible_to(&e, a.p.uid, a.p.is_admin)) {
+        return send_error(req, "404 Not Found", "Code nicht gefunden");
+    }
+    bool owner = e.owner_uid == a.p.uid;
+    if (!a.p.is_admin && !owner && !(a.p.perms & USER_PERM_EDIT_SHARED)) {
+        return send_error(req, "403 Forbidden", "Nur Besitzer, Admin oder Benutzer mit Bearbeitungsrecht duerfen den Code senden");
+    }
+    cJSON *o = cJSON_CreateObject();
+    cJSON *r = sms_send_code(&e, &a.p);
+    bool ok = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(r, "ok"));
+    cJSON_AddBoolToObject(o, "ok", ok);
+    cJSON_AddItemToObject(o, "sms", r);
+    if (!ok) httpd_resp_set_status(req, "502 Bad Gateway");
+    return send_json(req, o);
 }
 
 static esp_err_t h_codes_delete(httpd_req_t *req)
@@ -1534,6 +1691,8 @@ static esp_err_t h_system_get(httpd_req_t *req)
     cJSON_AddItemToObject(o, "relays", relays_to_json());
     cJSON_AddItemToObject(o, "keypad", keypad_to_json(&g_settings.keypad));
     cJSON_AddItemToObject(o, "site", site_to_json(&g_settings.site));
+    cJSON_AddItemToObject(o, "sms", sms_to_json(&g_settings.sms, false));
+    cJSON_AddItemToObject(o, "codes", codes_cfg_to_json(&g_settings.codes));
     cJSON_AddStringToObject(o, "admin_user", g_settings.admin.user);
     cJSON *pins = cJSON_AddObjectToObject(o, "pins");
     cJSON_AddNumberToObject(pins, "keypad_rx", CFG_KEYPAD_RX_GPIO);
@@ -1573,6 +1732,21 @@ static esp_err_t h_system_post(httpd_req_t *req)
         g_settings.site = site_new;
         event_log(EV_CONFIG, "Anlagen-/Betreuerinfos geaendert von %s", a.p.name);
     }
+    cJSON *cc = cJSON_GetObjectItemCaseSensitive(j, "codes");
+    if (cJSON_IsObject(cc)) {
+        codes_cfg_from_json(cc, &g_settings.codes);
+        event_log(EV_CONFIG, "Code-Vorgaben geaendert von %s (Einmalcode-Fenster %u s, Freigaben %s)", a.p.name,
+                  g_settings.codes.grace_default_s, g_settings.codes.sharing_enabled ? "an" : "aus, alle Codes fuer alle sichtbar");
+    }
+    cJSON *sms = cJSON_GetObjectItemCaseSensitive(j, "sms");
+    if (cJSON_IsObject(sms)) {
+        settings_sms_t ns = g_settings.sms;
+        const char *err = sms_from_json(sms, &ns);
+        if (err) { cJSON_Delete(j); return send_error(req, "400 Bad Request", err); }
+        g_settings.sms = ns;
+        event_log(EV_CONFIG, "SMS-Versand %s von %s (%s, Benutzer '%s')", ns.enabled ? "eingeschaltet" : "ausgeschaltet",
+                  a.p.name, ns.url, ns.user);
+    }
     cJSON *k = cJSON_GetObjectItemCaseSensitive(j, "keypad");
     if (cJSON_IsObject(k)) keypad_from_json(k, &g_settings.keypad);
     bool hw = d || cJSON_IsObject(k);
@@ -1589,6 +1763,30 @@ static esp_err_t h_system_post(httpd_req_t *req)
         event_log(EV_CONFIG, "Systemeinstellungen geaendert (%d Tuer(en) aktiv, davon %d Rolltor(e), Keypad -> Tuer %d, %" PRIu32 " Bd%s)",
                   active, gates, access_keypad_door() + 1, g_settings.keypad.baud, g_settings.keypad.learn_mode ? ", Lernmodus" : "");
     }
+    return send_ok(req);
+}
+
+/* Admin: Test-SMS {number} ueber die gespeicherten Router-Zugangsdaten */
+static esp_err_t h_sms_test_post(httpd_req_t *req)
+{
+    req_auth_t a;
+    if (!require_admin_csrf(req, &a)) return ESP_OK;
+    cJSON *j = read_json(req);
+    if (!j) return send_error(req, "400 Bad Request", "JSON erwartet");
+    char number[32];
+    copy_str(number, sizeof(number), jstr(j, "number", ""));
+    cJSON_Delete(j);
+    if (!sms_gateway_valid_number(number)) return send_error(req, "400 Bad Request", "Telefonnummer ungueltig");
+    char text[200];                                 /* Anlage(31) + Hostname(63) + Festtext */
+    snprintf(text, sizeof(text), "%s: Test-SMS vom Zutrittssystem (%s)",
+             g_settings.site.name[0] ? g_settings.site.name : g_settings.net.hostname, g_settings.net.hostname);
+    char err[128];
+    esp_err_t res = sms_gateway_send(number, text, err, sizeof(err));
+    if (res != ESP_OK) {
+        event_log(EV_SYSTEM, "Test-SMS an %s fehlgeschlagen (%s): %s", number, a.p.name, err);
+        return send_error(req, "502 Bad Gateway", err);
+    }
+    event_log(EV_CONFIG, "Test-SMS an %s gesendet von %s", number, a.p.name);
     return send_ok(req);
 }
 
@@ -1666,6 +1864,11 @@ static const char *user_from_json(const cJSON *j, user_t *u)
 {
     copy_str(u->name, sizeof(u->name), jstr(j, "name", u->name));
     if (!auth_valid_username(u->name)) return "Name ungueltig (1-31 Zeichen, keine Leerzeichen)";
+    const char *org = jstr(j, "org", NULL);
+    if (org) {
+        copy_str(u->org, sizeof(u->org), org);
+        trim(u->org);
+    }
     const char *role = jstr(j, "role", NULL);
     if (role) u->role = strcmp(role, "admin") == 0 ? USER_ROLE_ADMIN : USER_ROLE_USER;
     u->enabled = jbool(j, "enabled", u->enabled);
@@ -1675,6 +1878,7 @@ static const char *user_from_json(const cJSON *j, user_t *u)
     uint8_t perms = 0;
     if (jbool(j, "edit_shared", (u->perms & USER_PERM_EDIT_SHARED) != 0)) perms |= USER_PERM_EDIT_SHARED;
     if (jbool(j, "open_doors", (u->perms & USER_PERM_OPEN_DOORS) != 0)) perms |= USER_PERM_OPEN_DOORS;
+    if (jbool(j, "view_log", (u->perms & USER_PERM_VIEW_LOG) != 0)) perms |= USER_PERM_VIEW_LOG;
     u->perms = perms;
     int mc = jint(j, "max_codes", u->max_codes);
     if (mc < 0) mc = 0;
@@ -1848,6 +2052,8 @@ static esp_err_t h_backup_get(httpd_req_t *req)
     cJSON_AddItemToObject(st, "net", net_to_json(&g_settings.net));
     cJSON *wifi = cJSON_AddObjectToObject(st, "wifi");
     wifi_to_json(wifi, &g_settings.wifi, true);               /* mit Passwort, sonst ist das Geraet nach Restore ohne WLAN */
+    cJSON_AddItemToObject(st, "sms", sms_to_json(&g_settings.sms, true));
+    cJSON_AddItemToObject(st, "codes", codes_cfg_to_json(&g_settings.codes));
     cJSON_AddItemToObject(st, "doors", doors_to_json());
     cJSON_AddItemToObject(st, "keypad", keypad_to_json(&g_settings.keypad));
     cJSON_AddItemToObject(st, "site", site_to_json(&g_settings.site));
@@ -1897,6 +2103,10 @@ static esp_err_t h_restore_post(httpd_req_t *req)
         if (cJSON_IsObject(k)) keypad_from_json(k, &ns.keypad);
         cJSON *site = cJSON_GetObjectItemCaseSensitive(st, "site");
         if (cJSON_IsObject(site)) site_from_json(site, &ns.site);
+        cJSON *sms = cJSON_GetObjectItemCaseSensitive(st, "sms");
+        if (cJSON_IsObject(sms)) sms_from_json(sms, &ns.sms);
+        cJSON *cc = cJSON_GetObjectItemCaseSensitive(st, "codes");
+        if (cJSON_IsObject(cc)) codes_cfg_from_json(cc, &ns.codes);
     }
     cJSON *users = cJSON_GetObjectItemCaseSensitive(j, "users");
     bool had_users = cJSON_IsArray(users);
@@ -2539,6 +2749,7 @@ static const httpd_uri_t s_routes[] = {
     ROUTE("/api/codes",                HTTP_GET,    h_codes_get),
     ROUTE("/api/codes",                HTTP_POST,   h_codes_post),
     ROUTE("/api/codes/*",              HTTP_PUT,    h_codes_put),
+    ROUTE("/api/codes/*",              HTTP_POST,   h_codes_action_post),
     ROUTE("/api/codes/*",              HTTP_DELETE, h_codes_delete),
     ROUTE("/api/door/open",            HTTP_POST,   h_door_open),
     ROUTE("/api/door/close",           HTTP_POST,   h_door_close),
@@ -2547,6 +2758,7 @@ static const httpd_uri_t s_routes[] = {
     ROUTE("/api/system",               HTTP_GET,    h_system_get),
     ROUTE("/api/system",               HTTP_POST,   h_system_post),
     ROUTE("/api/system/password",      HTTP_POST,   h_password_post),
+    ROUTE("/api/system/sms-test",      HTTP_POST,   h_sms_test_post),
     ROUTE("/api/system/reboot",        HTTP_POST,   h_reboot_post),
     ROUTE("/api/system/factory-reset", HTTP_POST,   h_factory_reset_post),
     ROUTE("/api/users",                HTTP_GET,    h_users_get),

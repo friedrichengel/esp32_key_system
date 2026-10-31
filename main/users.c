@@ -91,9 +91,11 @@ cJSON *users_entry_to_json(const user_t *u)
     cJSON_AddNumberToObject(o, "doors", u->doors);
     cJSON_AddBoolToObject(o, "edit_shared", (u->perms & USER_PERM_EDIT_SHARED) != 0);
     cJSON_AddBoolToObject(o, "open_doors", (u->perms & USER_PERM_OPEN_DOORS) != 0);
+    cJSON_AddBoolToObject(o, "view_log", (u->perms & USER_PERM_VIEW_LOG) != 0);
     cJSON_AddNumberToObject(o, "max_codes", u->max_codes);
     cJSON_AddNumberToObject(o, "created_at", (double)u->created_at);
     cJSON_AddStringToObject(o, "created_by", u->created_by);
+    cJSON_AddStringToObject(o, "org", u->org);
     cJSON_AddNumberToObject(o, "last_login", (double)u->last_login);
     cJSON_AddBoolToObject(o, "twofa_enabled", u->twofa.enabled);
     return o;
@@ -138,10 +140,12 @@ static bool entry_from_file_json(const cJSON *o, user_t *u)
     u->code_types = (uint8_t)jnum(o, "code_types", USER_TYPES_ALL);
     u->doors = (uint32_t)jnum(o, "doors", CFG_ALL_DOORS_MASK);
     u->perms = (jb(o, "edit_shared", false) ? USER_PERM_EDIT_SHARED : 0) |
-               (jb(o, "open_doors", false) ? USER_PERM_OPEN_DOORS : 0);
+               (jb(o, "open_doors", false) ? USER_PERM_OPEN_DOORS : 0) |
+               (jb(o, "view_log", true) ? USER_PERM_VIEW_LOG : 0);      /* fehlt in alten Dateien: an */
     u->max_codes = (uint16_t)jnum(o, "max_codes", 0);
     u->created_at = (int64_t)jnum(o, "created_at", 0);
     strlcpy(u->created_by, js(o, "created_by", ""), sizeof(u->created_by));
+    strlcpy(u->org, js(o, "org", ""), sizeof(u->org));
     u->last_login = (int64_t)jnum(o, "last_login", 0);
     cJSON *t = cJSON_GetObjectItemCaseSensitive(o, "twofa");
     if (cJSON_IsObject(t) && jb(t, "enabled", false)) {

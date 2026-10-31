@@ -9,8 +9,10 @@
 #include "esp_err.h"
 
 typedef void (*keypad_code_cb_t)(const char *code);
+typedef void (*keypad_close_cb_t)(void);        /* Schliessbefehl: Loeschtaste n-mal bei leerer Eingabe */
 
 esp_err_t keypad_start(keypad_code_cb_t cb);
+void      keypad_set_close_cb(keypad_close_cb_t cb);
 void      keypad_apply_settings(void);       /* Baud/Parität/Rahmen nach Settings-Änderung */
 /* Lernmodus: letzte Rohbytes als Hex ("41 42 0D ...") und ASCII (nicht druckbar = '.') */
 size_t    keypad_get_raw(char *hex, size_t hex_len, char *ascii, size_t ascii_len);

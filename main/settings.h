@@ -12,7 +12,7 @@
 #include "esp_err.h"
 #include "config.h"
 
-#define SETTINGS_VERSION        6               /* v6: wifi, v5: door_ext[] (Rolltor), v4: site, v3: doors[], keypad.door */
+#define SETTINGS_VERSION        9               /* v9: keypad_ext, v8: codes, v7: sms, v6: wifi, v5: door_ext[] */
 #define SETTINGS_TOTP_SECRET_LEN 20
 #define SETTINGS_RECOVERY_COUNT 8
 #define SETTINGS_STR_SHORT      32
@@ -26,6 +26,9 @@
 #define SETTINGS_STR_INFO       512
 #define SETTINGS_WIFI_SSID_LEN  33              /* 32 Byte + NUL                          */
 #define SETTINGS_WIFI_PASS_LEN  65              /* WPA2-PSK: 8..63 Zeichen + NUL           */
+#define SETTINGS_SMS_URL_LEN    96
+#define SETTINGS_SMS_PASS_LEN   64
+#define SETTINGS_SMS_MODEM_LEN  16
 
 typedef enum {
     IPV4_MODE_DHCP = 0,
@@ -131,6 +134,33 @@ typedef struct {
     char     password[SETTINGS_WIFI_PASS_LEN];        /* leer = offenes Netz                     */
 } settings_wifi_t;
 
+/* SMS-Versand über die REST-API eines Mobilfunkrouters (Teltonika RutOS), ab v7, ab Werk aus.
+ * Das Gerät meldet sich je SMS am Router an (POST /api/login) und sendet über
+ * POST /api/messages/actions/send. Passwort wird nie per API ausgegeben, nur im Backup. */
+typedef struct {
+    bool     enabled;
+    char     url[SETTINGS_SMS_URL_LEN];              /* z. B. https://192.168.1.1, ohne Slash   */
+    char     user[SETTINGS_STR_SHORT];               /* API-Benutzer mit Recht "Messages"       */
+    char     password[SETTINGS_SMS_PASS_LEN];
+    char     modem[SETTINGS_SMS_MODEM_LEN];          /* Modem-Kennung, z. B. "1-1"; leer = Default */
+    bool     verify_tls;                             /* Router-Zertifikat pruefen (Default aus) */
+} settings_sms_t;
+
+/* Vorgaben für Zutrittscodes (ab v8) */
+typedef struct {
+    uint16_t grace_default_s;                        /* Standard-Nutzungsfenster neuer Einmalcodes, 0..CFG_ONETIME_GRACE_MAX_S */
+    bool     sharing_enabled;                        /* Freigabe von Codes an andere Benutzer; aus = alle Codes fuer alle sichtbar */
+    uint8_t  reserved;
+} settings_codes_t;
+
+/* Keypad-Erweiterung (ab v9): Schließbefehl ohne Code. Wird die Löschtaste bei leerer Eingabe
+ * close_presses-mal kurz hintereinander gedrückt, fährt das dem Keypad zugeordnete Rolltor ab.
+ * 0 = aus. Bei einem Türöffner passiert nichts (Protokolleintrag). */
+typedef struct {
+    uint8_t  close_presses;                          /* 0 = aus, sonst 2..CFG_KEYPAD_CLOSE_PRESSES_MAX */
+    uint8_t  reserved[3];
+} settings_keypad_ext_t;
+
 /* Neue Felder nur am Ende anhängen: settings_init() übernimmt ältere Blobs als Präfix. */
 typedef struct {
     uint32_t           version;
@@ -141,7 +171,10 @@ typedef struct {
     settings_twofa_t   twofa;                         /* 2FA des Admins; Benutzer: users.json   */
     settings_site_t    site;                          /* ab v4                                   */
     settings_door_ext_t door_ext[CFG_MAX_DOORS];      /* ab v5: Türtyp, Rolltor-Relais           */
-    settings_wifi_t    wifi;                          /* ab v6: WLAN statt Ethernet, Default aus */
+    settings_wifi_t    wifi;                          /* ab v6: WLAN zusätzlich, Default aus     */
+    settings_sms_t     sms;                           /* ab v7: SMS-Versand ueber Router         */
+    settings_codes_t   codes;                         /* ab v8: Vorgaben fuer Codes              */
+    settings_keypad_ext_t keypad_ext;                 /* ab v9: Schliessbefehl am Keypad         */
 } settings_t;
 
 /* Globale Instanz; nach settings_init() gültig. Schreibzugriff nur über settings_save(). */

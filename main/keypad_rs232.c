@@ -16,6 +16,7 @@
 static const char *TAG = "keypad";
 
 static keypad_code_cb_t  s_cb;
+static keypad_close_cb_t s_close_cb;
 static uint8_t           s_raw[CFG_KEYPAD_RAW_BUF];
 static size_t            s_raw_head;
 static size_t            s_raw_count;
@@ -114,6 +115,8 @@ static void keypad_task(void *arg)
     size_t len = 0;
     int64_t last_byte_us = 0;
     uint8_t rx[64];
+    int clear_count = 0;                         /* Loeschtaste bei leerer Eingabe, dicht hintereinander */
+    int64_t last_clear_us = 0;
 
     while (1) {
         if (s_reconfigure) {
@@ -148,10 +151,23 @@ static void keypad_task(void *arg)
         for (int i = 0; i < n; i++) {
             char c = (char)rx[i];
             if (k->clear_key && c == k->clear_key) {
-                event_log(EV_SYSTEM, "Keypad: Eingabe mit Loeschtaste verworfen (%u Zeichen)", (unsigned)len);
-                len = 0;
+                if (len > 0) {
+                    event_log(EV_SYSTEM, "Keypad: Eingabe mit Loeschtaste verworfen (%u Zeichen)", (unsigned)len);
+                    len = 0;
+                    clear_count = 0;
+                    continue;
+                }
+                /* Leere Eingabe: Schliessbefehl zaehlen (n-mal innerhalb des Fensters) */
+                uint8_t need = g_settings.keypad_ext.close_presses;
+                clear_count = (now - last_clear_us <= (int64_t)CFG_KEYPAD_CLOSE_WINDOW_MS * 1000) ? clear_count + 1 : 1;
+                last_clear_us = now;
+                if (need && clear_count >= need) {
+                    clear_count = 0;
+                    if (s_close_cb) s_close_cb();
+                }
                 continue;
             }
+            clear_count = 0;
             if (k->frame_mode == KEYPAD_FRAME_TERMINATOR && k->terminator && c == k->terminator) {
                 emit(code, &len);
                 continue;
@@ -172,6 +188,11 @@ static void keypad_task(void *arg)
             }
         }
     }
+}
+
+void keypad_set_close_cb(keypad_close_cb_t cb)
+{
+    s_close_cb = cb;
 }
 
 esp_err_t keypad_start(keypad_code_cb_t cb)

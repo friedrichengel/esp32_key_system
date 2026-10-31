@@ -42,6 +42,7 @@ typedef struct {
     char     created_by[AUTH_NAME_LEN];
     int64_t  last_login;
     settings_twofa_t twofa;
+    char     org[AUTH_NAME_LEN];            /* Organisation, nur Anzeige/Filter in der Code-Ansicht */
 } user_t;
 
 esp_err_t users_init(void);

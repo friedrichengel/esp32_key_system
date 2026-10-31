@@ -40,6 +40,8 @@
 #define CFG_KEYPAD_MAX_CODE_LEN   12            /* Ziffern je Code                          */
 #define CFG_KEYPAD_TIMEOUT_MS     1500          /* Eingabe gilt nach dieser Pause als fertig */
 #define CFG_KEYPAD_IDLE_RESET_MS  10000         /* Teileingabe nach dieser Pause verwerfen   */
+#define CFG_KEYPAD_CLOSE_WINDOW_MS 3000         /* Schliessbefehl: Loeschtasten-Druecke muessen so dicht liegen */
+#define CFG_KEYPAD_CLOSE_PRESSES_MAX 6
 #define CFG_KEYPAD_RAW_BUF        256           /* Rohbytes für den Lernmodus                */
 
 /* Türen: bis zu CFG_MAX_DOORS Relais, je Tür optional Türkontakt (Reed gegen GND) und
@@ -54,6 +56,9 @@
 #define CFG_RELAY_ACTIVE_LOW      0             /* Compile-Zeit-Default, bis NVS gelesen ist */
 #define CFG_WIFI_RETRY_S          5             /* WLAN: Pause zwischen Verbindungsversuchen  */
 #define CFG_WIFI_SCAN_MAX         20            /* WLAN-Suche: max. gelieferte Netze          */
+#define CFG_SMS_HTTP_TIMEOUT_MS   8000          /* SMS-Versand: Timeout je Router-Request     */
+#define CFG_SMS_RESP_MAX          1024          /* SMS-Versand: Puffer fuer Request/Antwort   */
+#define CFG_SMS_TEXT_MAX          300           /* SMS-Versand: max. Textlaenge               */
 #define CFG_RELAY_PULSE_MS_DEFAULT 3000
 #define CFG_RELAY_PULSE_MS_MIN    500
 #define CFG_RELAY_PULSE_MS_MAX    30000         /* harte Obergrenze in der Firmware         */
