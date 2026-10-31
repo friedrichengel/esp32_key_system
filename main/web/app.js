@@ -579,6 +579,12 @@ curl -k -X POST https://${host}/api/v1/doors/1/stop -H "Authorization: Bearer ks
 # Status (Türen, Kontakt, Relais, Link)
 curl -k https://${host}/api/v1/status -H "Authorization: Bearer ks1.…"
 
+# Per SMS über einen Mobilfunkrouter (Teltonika RUT956: Services → Mobile Utilities → SMS Gateway
+# → SMS Forwarding To HTTP): Method GET, URL https://${host}/api/v1/sms, Number value name "number",
+# Message value name "text", Extra data pair 1: "token" = ks1.…, Mode "Listed numbers",
+# HTTPS certificate verification "Ignore". SMS-Text: "<Code>", "<Code> 2 auf", "<Code> 1 ab", "<Code> stop"
+curl -k "https://${host}/api/v1/sms?token=ks1.…&number=%2B491701234567&text=123456%202%20auf"
+
 # Home Assistant (configuration.yaml)
 rest_command:
   haustuer_oeffnen:

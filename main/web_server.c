@@ -35,6 +35,7 @@
 
 #include <strings.h>
 #include "lwip/sockets.h"
+#include "mbedtls/base64.h"
 
 /* Eingebettete Web-UI (gzip), erzeugt von tools/embed_web_assets.py */
 #include "web_assets_gen.h"
@@ -2119,8 +2120,11 @@ static void peer_ip(httpd_req_t *req, char *buf, size_t len)
     }
 }
 
-/* Bearer-Token prüfen. Sendet bei Fehler selbst die Antwort und liefert false. */
-static bool require_bearer(httpd_req_t *req, bool persist_use, api_token_t *t, char *ip, size_t iplen)
+/* Bearer-Token prüfen. Sendet bei Fehler selbst die Antwort und liefert false.
+ * alt_token: Token aus einem Query-/Formularfeld, falls kein Authorization-Header kommt
+ * (SMS-Weiterleitung eines Routers kann keine Header setzen). */
+static bool require_bearer_ex(httpd_req_t *req, bool persist_use, api_token_t *t, char *ip, size_t iplen,
+                              const char *alt_token)
 {
     peer_ip(req, ip, iplen);
     uint32_t retry = 0;
@@ -2132,14 +2136,18 @@ static bool require_bearer(httpd_req_t *req, bool persist_use, api_token_t *t, c
         return false;
     }
     char hdr[96] = {0};
-    if (httpd_req_get_hdr_value_str(req, "Authorization", hdr, sizeof(hdr)) != ESP_OK ||
-        strncasecmp(hdr, "Bearer ", 7) != 0) {
+    const char *tok = NULL;
+    if (httpd_req_get_hdr_value_str(req, "Authorization", hdr, sizeof(hdr)) == ESP_OK &&
+        strncasecmp(hdr, "Bearer ", 7) == 0) {
+        tok = hdr + 7;
+        while (*tok == ' ') tok++;
+    } else if (alt_token && alt_token[0]) {
+        tok = alt_token;
+    } else {
         httpd_resp_set_hdr(req, "WWW-Authenticate", "Bearer");
         send_error(req, "401 Unauthorized", "Bearer-Token fehlt");
         return false;
     }
-    const char *tok = hdr + 7;
-    while (*tok == ' ') tok++;
     token_result_t r = api_tokens_verify(tok, ip, persist_use, t);
     if (r != TOKEN_OK) {
         api_tokens_rate_failed(ip);
@@ -2151,6 +2159,11 @@ static bool require_bearer(httpd_req_t *req, bool persist_use, api_token_t *t, c
     }
     api_tokens_rate_succeeded(ip);
     return true;
+}
+
+static bool require_bearer(httpd_req_t *req, bool persist_use, api_token_t *t, char *ip, size_t iplen)
+{
+    return require_bearer_ex(req, persist_use, t, ip, iplen, NULL);
 }
 
 /* Nur die Türen, die das Token sehen darf und die aktiv sind */
@@ -2259,6 +2272,199 @@ static esp_err_t h_v1_door_open(httpd_req_t *req)
 }
 
 /* ========================================================================
+ * API v1: SMS-Weiterleitung eines Mobilfunkrouters (z. B. Teltonika RUT956, "SMS Forwarding
+ * To HTTP"). Der Router ruft GET/POST /api/v1/sms mit Query- bzw. Formularfeldern auf:
+ *   number = Absendernummer, text = SMS-Text, token = Bearer-Token (als "Extra data pair",
+ *   weil der Router keine Header setzen kann), base64=1 wenn der Router den Text kodiert.
+ * SMS-Text: "<Code> [Tuer-Nr] [auf|ab|stop]". Der Code wird wie am Keypad gegen die
+ * Code-Datenbank geprueft (Gueltigkeit, Fenster, Nutzungen, Tuermaske).
+ * ====================================================================== */
+#define SMS_MAX_BODY 2048
+
+static void url_decode(char *s)
+{
+    char *o = s;
+    for (; *s; s++) {
+        if (*s == '+') {
+            *o++ = ' ';
+        } else if (*s == '%' && isxdigit((unsigned char)s[1]) && isxdigit((unsigned char)s[2])) {
+            char hex[3] = { s[1], s[2], 0 };
+            *o++ = (char)strtol(hex, NULL, 16);
+            s += 2;
+        } else {
+            *o++ = *s;
+        }
+    }
+    *o = 0;
+}
+
+/* Feld aus Query-String oder JSON holen (je nachdem, was der Router schickt); "" wenn nicht vorhanden */
+static void sms_field(const char *qs, const cJSON *json, const char *key, char *out, size_t len)
+{
+    out[0] = 0;
+    if (json) {
+        copy_str(out, len, jstr(json, key, ""));
+        return;
+    }
+    if (qs && httpd_query_key_value(qs, key, out, len) == ESP_OK) {
+        url_decode(out);
+    } else {
+        out[0] = 0;
+    }
+}
+
+static void trim(char *s)
+{
+    char *b = s;
+    while (*b && isspace((unsigned char)*b)) b++;
+    size_t n = strlen(b);
+    while (n && isspace((unsigned char)b[n - 1])) b[--n] = 0;
+    memmove(s, b, n + 1);
+}
+
+/* "<Code> [Tuer-Nr] [auf|ab|stop]" zerlegen; liefert Fehlertext oder NULL */
+static const char *sms_parse(char *text, char *code, size_t code_len, int *door_n, door_dir_t *dir, bool *stop)
+{
+    *door_n = 0; *dir = DOOR_DIR_UP; *stop = false; code[0] = 0;
+    char *save = NULL;
+    char *tok = strtok_r(text, " \t\r\n,;", &save);
+    if (!tok) return "SMS ohne Inhalt";
+    if (strlen(tok) > code_len - 1) return "Code zu lang";
+    strlcpy(code, tok, code_len);
+    while ((tok = strtok_r(NULL, " \t\r\n,;", &save)) != NULL) {
+        bool digits = tok[0] != 0;
+        for (const char *p = tok; *p; p++) if (!isdigit((unsigned char)*p)) { digits = false; break; }
+        if (digits) {
+            int n = atoi(tok);
+            if (n < 1 || n > CFG_MAX_DOORS) return "Tuernummer ungueltig";
+            *door_n = n;
+        } else if (!strcasecmp(tok, "auf") || !strcasecmp(tok, "open") || !strcasecmp(tok, "hoch") || !strcasecmp(tok, "up")) {
+            *dir = DOOR_DIR_UP; *stop = false;
+        } else if (!strcasecmp(tok, "ab") || !strcasecmp(tok, "zu") || !strcasecmp(tok, "close") ||
+                   !strcasecmp(tok, "runter") || !strcasecmp(tok, "down")) {
+            *dir = DOOR_DIR_DOWN; *stop = false;
+        } else if (!strcasecmp(tok, "stop") || !strcasecmp(tok, "stopp") || !strcasecmp(tok, "halt")) {
+            *stop = true;
+        } else if (!strcasecmp(tok, "tor") || !strcasecmp(tok, "tuer") || !strcasecmp(tok, "tür") || !strcasecmp(tok, "door")) {
+            /* Fuellwort vor der Nummer, ignorieren */
+        } else {
+            return "Unbekanntes Wort in der SMS";
+        }
+    }
+    return NULL;
+}
+
+static esp_err_t h_v1_sms(httpd_req_t *req)
+{
+    char *qs = NULL;
+    cJSON *json = NULL;
+    if (req->method == HTTP_GET) {
+        size_t qlen = httpd_req_get_url_query_len(req) + 1;
+        if (qlen > 1 && qlen <= SMS_MAX_BODY) {
+            qs = malloc(qlen);
+            if (qs && httpd_req_get_url_query_str(req, qs, qlen) != ESP_OK) qs[0] = 0;
+        }
+    } else {
+        char ctype[64] = {0};
+        httpd_req_get_hdr_value_str(req, "Content-Type", ctype, sizeof(ctype));
+        if (strstr(ctype, "json")) {
+            json = read_json_max(req, SMS_MAX_BODY);
+        } else {
+            qs = read_body(req, SMS_MAX_BODY, NULL);        /* application/x-www-form-urlencoded */
+        }
+    }
+    if (!qs && !json) return send_error(req, "400 Bad Request", "Felder number/text fehlen");
+
+    char token[TOKEN_PLAIN_LEN + 8], number[40], text[256], b64[8];
+    sms_field(qs, json, "token", token, sizeof(token));
+    sms_field(qs, json, "number", number, sizeof(number));
+    if (!number[0]) sms_field(qs, json, "sender", number, sizeof(number));
+    if (!number[0]) sms_field(qs, json, "from", number, sizeof(number));
+    sms_field(qs, json, "text", text, sizeof(text));
+    if (!text[0]) sms_field(qs, json, "message", text, sizeof(text));
+    if (!text[0]) sms_field(qs, json, "msg", text, sizeof(text));
+    sms_field(qs, json, "base64", b64, sizeof(b64));
+    free(qs);
+    if (json) cJSON_Delete(json);
+    trim(number);
+    if (!number[0]) strlcpy(number, "unbekannt", sizeof(number));
+
+    api_token_t t;
+    char ip[48];
+    if (!require_bearer_ex(req, true, &t, ip, sizeof(ip), token)) return ESP_OK;
+    if (!t.can_open) return send_error(req, "403 Forbidden", "Token darf keine Tueren oeffnen");
+
+    if (b64[0] == '1' || !strcasecmp(b64, "true") || !strcasecmp(b64, "yes")) {
+        unsigned char dec[sizeof(text)];
+        size_t olen = 0;
+        if (mbedtls_base64_decode(dec, sizeof(dec) - 1, &olen, (const unsigned char *)text, strlen(text)) != 0) {
+            return send_error(req, "400 Bad Request", "SMS-Text ist kein gueltiges Base64");
+        }
+        dec[olen] = 0;
+        strlcpy(text, (const char *)dec, sizeof(text));
+    }
+    trim(text);
+
+    char code[CFG_KEYPAD_MAX_CODE_LEN + 1];
+    int door_n = 0;
+    door_dir_t dir;
+    bool stop;
+    const char *perr = sms_parse(text, code, sizeof(code), &door_n, &dir, &stop);
+    if (perr) {
+        event_log(EV_DENIED, "SMS von %s (Token '%s'): %s", number, t.name, perr);
+        return send_error(req, "400 Bad Request", perr);
+    }
+
+    /* Tuer: angegeben, sonst Keypad-Tuer wenn im Token erlaubt, sonst erste erlaubte aktive Tuer */
+    int idx = -1;
+    if (door_n) {
+        idx = door_n - 1;
+    } else if ((t.doors & (1u << access_keypad_door())) && door_is_enabled(access_keypad_door())) {
+        idx = access_keypad_door();
+    } else {
+        for (int i = 0; i < CFG_MAX_DOORS; i++) {
+            if ((t.doors & (1u << i)) && door_is_enabled(i)) { idx = i; break; }
+        }
+    }
+    if (idx < 0) return send_error(req, "409 Conflict", "Keine aktive Tuer fuer dieses Token");
+    if (!(t.doors & (1u << idx))) {
+        event_log(EV_DENIED, "SMS von %s: Token '%s' darf Tuer %d nicht bedienen", number, t.name, idx + 1);
+        return send_error(req, "403 Forbidden", "Token darf diese Tuer nicht bedienen");
+    }
+    if (!door_is_enabled(idx)) return send_error(req, "409 Conflict", "Tuer ist deaktiviert");
+
+    code_entry_t m;
+    bool in_grace = false;
+    code_result_t res = codes_check_and_use(code, idx, &m, &in_grace);
+    if (res != CODE_OK) {
+        api_tokens_rate_failed(ip);                 /* zu viele falsche Codes sperren die Router-IP */
+        event_log(EV_DENIED, "SMS von %s: Code abgelehnt (%u Zeichen) fuer Tuer %d: %s", number,
+                  (unsigned)strlen(code), idx + 1, codes_result_text(res));
+        vTaskDelay(pdMS_TO_TICKS(300));
+        return send_error(req, "403 Forbidden", codes_result_text(res));
+    }
+    api_tokens_rate_succeeded(ip);
+
+    const char *act = stop ? "stop" : dir == DOOR_DIR_DOWN ? "ab" : "auf";
+    event_log(EV_ACCESS, "Zutritt per SMS von %s: '%s' (#%" PRIu32 ", %s%s) -> Tuer %d %s", number, m.name, m.id,
+              codes_type_name(m.type), in_grace ? ", Nutzungsfenster" : "", idx + 1, act);
+    char reason[96];                                /* "SMS " + Nummer(39) + ", Code '" + Name(31) + "'" */
+    snprintf(reason, sizeof(reason), "SMS %s, Code '%s'", number, m.name);
+    esp_err_t err = door_do(idx, stop ? DOOR_DIR_NONE : dir, reason, 0);
+    bool sent;
+    esp_err_t r = door_action_error(req, err, &sent);
+    if (sent) return r;
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddBoolToObject(o, "ok", true);
+    cJSON_AddNumberToObject(o, "door", idx + 1);
+    cJSON_AddStringToObject(o, "name", door_name(idx));
+    cJSON_AddStringToObject(o, "kind", door_kind_name(g_settings.door_ext[idx].kind));
+    cJSON_AddStringToObject(o, "action", door_action_name(stop ? DOOR_DIR_NONE : dir));
+    cJSON_AddStringToObject(o, "code_name", m.name);
+    return send_json(req, o);
+}
+
+/* ========================================================================
  * HTTP -> HTTPS Redirect (Port 80)
  * ====================================================================== */
 static esp_err_t h_redirect(httpd_req_t *req)
@@ -2355,6 +2561,8 @@ static const httpd_uri_t s_routes[] = {
     ROUTE("/api/v1/status",            HTTP_GET,    h_v1_status),
     ROUTE("/api/v1/doors",             HTTP_GET,    h_v1_doors),
     ROUTE("/api/v1/doors/*",           HTTP_POST,   h_v1_door_open),
+    ROUTE("/api/v1/sms",               HTTP_GET,    h_v1_sms),
+    ROUTE("/api/v1/sms",               HTTP_POST,   h_v1_sms),
     ROUTE("/api/backup",               HTTP_GET,    h_backup_get),
     ROUTE("/api/restore",              HTTP_POST,   h_restore_post),
     ROUTE("/api/firmware",             HTTP_GET,    h_firmware_get),

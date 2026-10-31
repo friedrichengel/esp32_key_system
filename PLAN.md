@@ -193,6 +193,8 @@ Speicherung: NVS-Namespace `codes`, bis ~200 Einträge, Codes im Klartext. Ehrli
 - **Genau ein Keypad pro Gerät** (Entscheidung 24.10.2026), fest einer Tür zugeordnet (`keypad.door`, Default Tür 1, in der UI wählbar). Ein gültiger Code am Keypad öffnet nur diese Tür, und nur wenn seine Türmaske sie enthält. Die übrigen Türen werden ausschließlich über Web-UI, API-Token und REX-Taster bedient.
 - `door_relay.c` wird instanzbasiert (`door_open(idx, reason, ms)`), eigener `esp_timer` je Tür; Status-API liefert `doors[]`; Web-UI zeigt je Tür Zustand und Öffnen-Button; Protokoll nennt den Türnamen.
 
+**Zutritt per SMS (31.10.2026):** `GET/POST /api/v1/sms` nimmt die SMS-Weiterleitung eines Mobilfunkrouters (Teltonika RUT956 „SMS Forwarding To HTTP“) an: Felder `number`, `text`, `token` (Bearer-Token als Extra data pair, da der Router keine Header setzen kann), optional `base64`. SMS-Text `<Code> [Tür] [auf|ab|stop]`; der Code wird wie am Keypad über `codes_check_and_use()` geprüft und verbraucht. Schutz: Token mit Türmaske und IP-Regel auf den Router, Absenderliste im Router, falsche Codes zählen auf das Token-Rate-Limit der Router-IP. Keine Antwort-SMS (Router-REST-API mit Login wäre nötig, Teltonika hat `/cgi-bin/sms_send` ab RutOS 7.14 entfernt).
+
 **API-Token (Hausautomation / Home Assistant)**
 
 - **Format** `ks1.<id>.<secret>`: `ks1` = Präfix/Version (erkennbar in Logs und Secret-Scannern), `id` = 6 Byte Zufall als Base64url (8 Zeichen, nur zum Nachschlagen, darf im Protokoll stehen), `secret` = **32 Byte = 256 Bit** Zufall als Base64url (43 Zeichen). Gesamt 55 Zeichen.
