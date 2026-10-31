@@ -253,7 +253,7 @@
           <fieldset><legend>Türen (für Codes und zum Öffnen per Web-UI)</legend><div class="row" id="user-doors"></div></fieldset>
           <fieldset><legend>Weitere Rechte</legend>
             <label><input type="checkbox" name="edit_shared"> Freigegebene Codes anderer Benutzer voll bearbeiten (sonst nur ein-/ausschalten)</label>
-            <label><input type="checkbox" name="open_doors"> Türen über die Webseite öffnen</label>
+            <label><input type="checkbox" name="open_doors"> Türen über die Webseite öffnen (Rolltore: Auf und Ab)</label>
           </fieldset>
         </div>
         <div class="row">
@@ -309,7 +309,7 @@
         </div>
         <fieldset><legend>Türen</legend><div class="row" id="token-doors"></div></fieldset>
         <fieldset><legend>Rechte</legend>
-          <label><input type="checkbox" name="can_open" checked> Türen öffnen</label>
+          <label><input type="checkbox" name="can_open" checked> Türen öffnen (Rolltore: Auf und Ab)</label>
           <label><input type="checkbox" name="can_status" checked> Status lesen (Türkontakt, Relais, Link)</label>
         </fieldset>
         <p class="hint">Ein Ablaufdatum wird nur geprüft, solange die Uhr des Geräts gültig ist; ohne NTP bleibt das Token gültig.</p>
@@ -416,7 +416,7 @@
   <section id="view-system" class="view hidden">
     <div class="card">
       <h2>Türen und Relais</h2>
-      <p class="hint">Jede Tür hat ein Relais und optional Türkontakt und Austaster (Pins stehen in der Überschrift). Deaktivierte Türen lassen ihre Pins unberührt.</p>
+      <p class="hint">Jede Tür ist ein <strong>Türöffner</strong> (ein Relais, der Impuls öffnet) oder ein <strong>Rolltor</strong> (zwei Relais aus dem Pool der vier Relais-Ausgänge, eines für Auf und eines für Ab, je Fahrbefehl ein Impuls). Ein Relais darf nur einer aktiven Tür gehören; nutzt ein Rolltor das Relais einer anderen Tür, muss diese deaktiviert sein. Türkontakt und Austaster sind optional (Pins stehen in der Überschrift). Deaktivierte Türen lassen ihre Pins unberührt.</p>
       <form id="form-doors">
         <div id="doors-forms"></div>
         <button type="submit">Speichern</button>
@@ -426,7 +426,7 @@
       <h2>Keypad (RS232)</h2>
       <form id="form-keypad">
         <label>Zugeordnete Tür <select name="door" id="keypad-door"></select></label>
-        <p class="hint">Genau ein Keypad je Gerät. Ein gültiger Code am Keypad öffnet nur diese Tür.</p>
+        <p class="hint">Genau ein Keypad je Gerät. Ein gültiger Code am Keypad öffnet nur diese Tür (Rolltor: fährt auf).</p>
         <label>Baudrate <select name="baud"><option>1200</option><option>2400</option><option>4800</option><option>9600</option><option>19200</option><option>38400</option><option>57600</option><option>115200</option></select></label>
         <label>Parität <select name="parity"><option value="0">keine (8N1)</option><option value="1">gerade (8E1)</option><option value="2">ungerade (8O1)</option></select></label>
         <label>Rahmenerkennung <select name="frame_mode"><option value="0">Abschlusszeichen</option><option value="1">Feste Länge</option><option value="2">Pause (Timeout)</option></select></label>

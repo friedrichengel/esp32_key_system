@@ -345,22 +345,51 @@ static const char *net_from_json(const cJSON *j, settings_network_t *n)
     return NULL;
 }
 
+static const char *door_kind_name(uint8_t kind)
+{
+    return kind == DOOR_KIND_GATE ? "gate" : "opener";
+}
+
+static const char *door_dir_name(door_dir_t d)
+{
+    return d == DOOR_DIR_UP ? "up" : d == DOOR_DIR_DOWN ? "down" : "";
+}
+
 static cJSON *door_cfg_to_json(int idx)
 {
     const settings_door_t *d = &g_settings.doors[idx];
+    const settings_door_ext_t *e = &g_settings.door_ext[idx];
     cJSON *o = cJSON_CreateObject();
     cJSON_AddNumberToObject(o, "door", idx + 1);
     cJSON_AddBoolToObject(o, "enabled", d->enabled);
     cJSON_AddStringToObject(o, "name", d->name);
+    cJSON_AddStringToObject(o, "kind", door_kind_name(e->kind));
+    cJSON_AddNumberToObject(o, "relay_up", e->relay_up + 1);          /* Relaisnummern 1-basiert */
+    cJSON_AddNumberToObject(o, "relay_down", e->relay_down + 1);
     cJSON_AddNumberToObject(o, "relay_pulse_ms", d->relay_pulse_ms);
     cJSON_AddBoolToObject(o, "relay_active_low", d->relay_active_low);
     cJSON_AddBoolToObject(o, "door_contact_enable", d->door_contact_enable);
     cJSON_AddBoolToObject(o, "exit_button_enable", d->exit_button_enable);
     cJSON *pins = cJSON_AddObjectToObject(o, "pins");
     cJSON_AddNumberToObject(pins, "relay", door_relay_gpio(idx));
+    cJSON_AddNumberToObject(pins, "relay_up", door_relay_up_gpio(idx));
+    cJSON_AddNumberToObject(pins, "relay_down", door_relay_down_gpio(idx));
     cJSON_AddNumberToObject(pins, "contact", door_contact_gpio(idx));
     cJSON_AddNumberToObject(pins, "rex", door_rex_gpio(idx));
     return o;
+}
+
+/* Relais-Pool: Nummer 1..CFG_MAX_DOORS mit GPIO, für die Auswahl beim Rolltor */
+static cJSON *relays_to_json(void)
+{
+    cJSON *arr = cJSON_CreateArray();
+    for (int r = 0; r < CFG_MAX_DOORS; r++) {
+        cJSON *o = cJSON_CreateObject();
+        cJSON_AddNumberToObject(o, "relay", r + 1);
+        cJSON_AddNumberToObject(o, "gpio", door_relay_gpio(r));
+        cJSON_AddItemToArray(arr, o);
+    }
+    return arr;
 }
 
 static cJSON *doors_to_json(void)
@@ -372,9 +401,14 @@ static cJSON *doors_to_json(void)
     return arr;
 }
 
-static void door_from_json(const cJSON *d, settings_door_t *s)
+static void door_from_json(const cJSON *d, settings_door_t *s, settings_door_ext_t *e)
 {
     s->enabled = jbool(d, "enabled", s->enabled);
+    const char *kind = jstr(d, "kind", NULL);
+    if (kind) e->kind = strcmp(kind, "gate") == 0 ? DOOR_KIND_GATE : DOOR_KIND_OPENER;
+    int up = jint(d, "relay_up", e->relay_up + 1), down = jint(d, "relay_down", e->relay_down + 1);
+    if (up >= 1 && up <= CFG_MAX_DOORS) e->relay_up = (uint8_t)(up - 1);
+    if (down >= 1 && down <= CFG_MAX_DOORS) e->relay_down = (uint8_t)(down - 1);
     const char *name = jstr(d, "name", NULL);
     if (name && name[0]) copy_str(s->name, sizeof(s->name), name);
     int pulse = jint(d, "relay_pulse_ms", s->relay_pulse_ms);
@@ -386,8 +420,10 @@ static void door_from_json(const cJSON *d, settings_door_t *s)
     s->exit_button_enable = jbool(d, "exit_button_enable", s->exit_button_enable);
 }
 
-/* Akzeptiert ein Array [{door:n, ...}] oder (Backups vor v2) ein einzelnes Objekt für Tür 1 */
-static void doors_from_json(const cJSON *j, settings_door_t doors[CFG_MAX_DOORS])
+/* Akzeptiert ein Array [{door:n, ...}] oder (Backups vor v2) ein einzelnes Objekt für Tür 1.
+ * Schreibt in Kopien; der Aufrufer prüft mit door_settings_check() und übernimmt dann. */
+static void doors_from_json(const cJSON *j, settings_door_t doors[CFG_MAX_DOORS],
+                            settings_door_ext_t ext[CFG_MAX_DOORS])
 {
     if (cJSON_IsArray(j)) {
         int pos = 0;
@@ -395,12 +431,12 @@ static void doors_from_json(const cJSON *j, settings_door_t doors[CFG_MAX_DOORS]
         cJSON_ArrayForEach(it, j) {
             if (cJSON_IsObject(it)) {
                 int n = jint(it, "door", pos + 1);
-                if (n >= 1 && n <= CFG_MAX_DOORS) door_from_json(it, &doors[n - 1]);
+                if (n >= 1 && n <= CFG_MAX_DOORS) door_from_json(it, &doors[n - 1], &ext[n - 1]);
             }
             pos++;
         }
     } else if (cJSON_IsObject(j)) {
-        door_from_json(j, &doors[0]);
+        door_from_json(j, &doors[0], &ext[0]);
     }
 }
 
@@ -413,6 +449,7 @@ static cJSON *doors_brief_json(void)
         cJSON_AddNumberToObject(d, "door", i + 1);
         cJSON_AddStringToObject(d, "name", door_name(i));
         cJSON_AddBoolToObject(d, "enabled", door_is_enabled(i));
+        cJSON_AddStringToObject(d, "kind", door_kind_name(g_settings.door_ext[i].kind));
         cJSON_AddItemToArray(arr, d);
     }
     return arr;
@@ -424,7 +461,10 @@ static cJSON *door_status_json(int i)
     cJSON_AddNumberToObject(d, "door", i + 1);
     cJSON_AddStringToObject(d, "name", door_name(i));
     cJSON_AddBoolToObject(d, "enabled", door_is_enabled(i));
+    cJSON_AddStringToObject(d, "kind", door_kind_name(g_settings.door_ext[i].kind));
     cJSON_AddBoolToObject(d, "relay_active", door_relay_active(i));
+    cJSON_AddStringToObject(d, "direction", door_dir_name(door_active_dir(i)));      /* "up"/"down"/"" */
+    cJSON_AddStringToObject(d, "last_direction", door_dir_name(door_last_dir(i)));
     cJSON_AddBoolToObject(d, "contact_enabled", g_settings.doors[i].door_contact_enable);
     cJSON_AddBoolToObject(d, "contact_closed", door_contact_closed(i));
     cJSON_AddNumberToObject(d, "last_open_uptime_s", (double)door_last_open_uptime_s(i));
@@ -1293,7 +1333,19 @@ static esp_err_t h_codes_delete(httpd_req_t *req)
 /* ========================================================================
  * API: Tür / Keypad
  * ====================================================================== */
-static esp_err_t h_door_open(httpd_req_t *req)
+/* Fehler von door_open()/door_close() als HTTP-Antwort senden; *sent sagt, ob etwas gesendet wurde */
+static esp_err_t door_action_error(httpd_req_t *req, esp_err_t err, bool *sent)
+{
+    *sent = true;
+    if (err == ESP_OK) { *sent = false; return ESP_OK; }
+    if (err == ESP_ERR_INVALID_ARG) return send_error(req, "404 Not Found", "Tuer nicht vorhanden");
+    if (err == ESP_ERR_NOT_SUPPORTED) return send_error(req, "409 Conflict", "Nur ein Rolltor kennt die Richtung Ab");
+    if (err == ESP_ERR_INVALID_STATE) return send_error(req, "409 Conflict", "Tuer ist deaktiviert oder ihr Relais ist nicht verfuegbar");
+    return send_error(req, "500 Internal Server Error", "Relais konnte nicht geschaltet werden");
+}
+
+/* Web-UI: Tür öffnen (Rolltor: auf) bzw. Rolltor ab, Body optional {door: n} */
+static esp_err_t h_door_action(httpd_req_t *req, door_dir_t dir)
 {
     req_auth_t a;
     if (!require_auth_csrf(req, &a)) return ESP_OK;
@@ -1308,21 +1360,26 @@ static esp_err_t h_door_open(httpd_req_t *req)
     int idx = n ? n - 1 : access_keypad_door();
     if (idx < 0 || idx >= CFG_MAX_DOORS) return send_error(req, "404 Not Found", "Tuer nicht vorhanden");
     if (!a.p.is_admin && (!(a.p.perms & USER_PERM_OPEN_DOORS) || !(a.p.doors & (1u << idx)))) {
-        event_log(EV_DENIED, "Web-UI: '%s' darf Tuer %d nicht oeffnen", a.p.name, idx + 1);
-        return send_error(req, "403 Forbidden", "Du darfst diese Tuer nicht per Web-UI oeffnen");
+        event_log(EV_DENIED, "Web-UI: '%s' darf Tuer %d nicht bedienen", a.p.name, idx + 1);
+        return send_error(req, "403 Forbidden", "Du darfst diese Tuer nicht per Web-UI bedienen");
     }
     char reason[48];
     snprintf(reason, sizeof(reason), "Web-UI %s", a.p.name);
-    esp_err_t err = door_open(idx, reason, 0);
-    if (err == ESP_ERR_INVALID_ARG) return send_error(req, "404 Not Found", "Tuer nicht vorhanden");
-    if (err == ESP_ERR_INVALID_STATE) return send_error(req, "409 Conflict", "Tuer ist deaktiviert");
-    if (err != ESP_OK) return send_error(req, "500 Internal Server Error", "Relais konnte nicht geschaltet werden");
+    esp_err_t err = dir == DOOR_DIR_DOWN ? door_close(idx, reason, 0) : door_open(idx, reason, 0);
+    bool sent;
+    esp_err_t r = door_action_error(req, err, &sent);
+    if (sent) return r;
     cJSON *o = cJSON_CreateObject();
     cJSON_AddBoolToObject(o, "ok", true);
     cJSON_AddNumberToObject(o, "door", idx + 1);
     cJSON_AddStringToObject(o, "name", door_name(idx));
+    cJSON_AddStringToObject(o, "kind", door_kind_name(g_settings.door_ext[idx].kind));
+    cJSON_AddStringToObject(o, "direction", door_dir_name(dir));
     return send_json(req, o);
 }
+
+static esp_err_t h_door_open(httpd_req_t *req)  { return h_door_action(req, DOOR_DIR_UP); }
+static esp_err_t h_door_close(httpd_req_t *req) { return h_door_action(req, DOOR_DIR_DOWN); }
 
 static esp_err_t h_keypad_raw(httpd_req_t *req)
 {
@@ -1370,6 +1427,7 @@ static esp_err_t h_system_get(httpd_req_t *req)
     cJSON *o = cJSON_CreateObject();
     cJSON_AddItemToObject(o, "doors", doors_to_json());
     cJSON_AddNumberToObject(o, "max_doors", CFG_MAX_DOORS);
+    cJSON_AddItemToObject(o, "relays", relays_to_json());
     cJSON_AddItemToObject(o, "keypad", keypad_to_json(&g_settings.keypad));
     cJSON_AddItemToObject(o, "site", site_to_json(&g_settings.site));
     cJSON_AddStringToObject(o, "admin_user", g_settings.admin.user);
@@ -1385,17 +1443,32 @@ static esp_err_t h_system_post(httpd_req_t *req)
     if (!require_admin_csrf(req, &a)) return ESP_OK;
     cJSON *j = read_json(req);
     if (!j) return send_error(req, "400 Bad Request", "JSON erwartet");
+    settings_site_t site_new = g_settings.site;
     cJSON *site = cJSON_GetObjectItemCaseSensitive(j, "site");
     if (cJSON_IsObject(site)) {
-        settings_site_t s = g_settings.site;
-        const char *err = site_from_json(site, &s);
+        const char *err = site_from_json(site, &site_new);
         if (err) { cJSON_Delete(j); return send_error(req, "400 Bad Request", err); }
-        g_settings.site = s;
-        event_log(EV_CONFIG, "Anlagen-/Betreuerinfos geaendert von %s", a.p.name);
     }
     cJSON *d = cJSON_GetObjectItemCaseSensitive(j, "doors");
     if (!d) d = cJSON_GetObjectItemCaseSensitive(j, "door");
-    if (d) doors_from_json(d, g_settings.doors);
+    if (d) {
+        settings_door_t nd[CFG_MAX_DOORS];
+        settings_door_ext_t ne[CFG_MAX_DOORS];
+        memcpy(nd, g_settings.doors, sizeof(nd));
+        memcpy(ne, g_settings.door_ext, sizeof(ne));
+        doors_from_json(d, nd, ne);
+        char errbuf[160];
+        if (door_settings_check(nd, ne, errbuf, sizeof(errbuf))) {
+            cJSON_Delete(j);
+            return send_error(req, "400 Bad Request", errbuf);
+        }
+        memcpy(g_settings.doors, nd, sizeof(nd));
+        memcpy(g_settings.door_ext, ne, sizeof(ne));
+    }
+    if (cJSON_IsObject(site)) {
+        g_settings.site = site_new;
+        event_log(EV_CONFIG, "Anlagen-/Betreuerinfos geaendert von %s", a.p.name);
+    }
     cJSON *k = cJSON_GetObjectItemCaseSensitive(j, "keypad");
     if (cJSON_IsObject(k)) keypad_from_json(k, &g_settings.keypad);
     bool hw = d || cJSON_IsObject(k);
@@ -1404,10 +1477,13 @@ static esp_err_t h_system_post(httpd_req_t *req)
     if (hw) {
         door_apply_settings();
         keypad_apply_settings();
-        int active = 0;
-        for (int i = 0; i < CFG_MAX_DOORS; i++) active += g_settings.doors[i].enabled;
-        event_log(EV_CONFIG, "Systemeinstellungen geaendert (%d Tuer(en) aktiv, Keypad -> Tuer %d, %" PRIu32 " Bd%s)",
-                  active, access_keypad_door() + 1, g_settings.keypad.baud, g_settings.keypad.learn_mode ? ", Lernmodus" : "");
+        int active = 0, gates = 0;
+        for (int i = 0; i < CFG_MAX_DOORS; i++) {
+            active += g_settings.doors[i].enabled;
+            gates += g_settings.doors[i].enabled && g_settings.door_ext[i].kind == DOOR_KIND_GATE;
+        }
+        event_log(EV_CONFIG, "Systemeinstellungen geaendert (%d Tuer(en) aktiv, davon %d Rolltor(e), Keypad -> Tuer %d, %" PRIu32 " Bd%s)",
+                  active, gates, access_keypad_door() + 1, g_settings.keypad.baud, g_settings.keypad.learn_mode ? ", Lernmodus" : "");
     }
     return send_ok(req);
 }
@@ -1698,7 +1774,14 @@ static esp_err_t h_restore_post(httpd_req_t *req)
         }
         cJSON *d = cJSON_GetObjectItemCaseSensitive(st, "doors");
         if (!d) d = cJSON_GetObjectItemCaseSensitive(st, "door");
-        if (d) doors_from_json(d, ns.doors);
+        if (d) {
+            doors_from_json(d, ns.doors, ns.door_ext);
+            char errbuf[160];
+            if (door_settings_check(ns.doors, ns.door_ext, errbuf, sizeof(errbuf))) {
+                cJSON_Delete(j);
+                return send_error(req, "400 Bad Request", errbuf);
+            }
+        }
         cJSON *k = cJSON_GetObjectItemCaseSensitive(st, "keypad");
         if (cJSON_IsObject(k)) keypad_from_json(k, &ns.keypad);
         cJSON *site = cJSON_GetObjectItemCaseSensitive(st, "site");
@@ -2005,8 +2088,9 @@ static esp_err_t h_v1_doors(httpd_req_t *req)
     return send_json(req, o);
 }
 
-/* Nummer aus /api/v1/doors/<n>/open: 1..CFG_MAX_DOORS, 0 = keine Tuer, -1 = andere Aktion */
-static int uri_door_number(const httpd_req_t *req)
+/* Nummer aus /api/v1/doors/<n>/open|close: 1..CFG_MAX_DOORS, 0 = keine Tuer, -1 = andere Aktion.
+ * dir: DOOR_DIR_UP für /open, DOOR_DIR_DOWN für /close */
+static int uri_door_number(const httpd_req_t *req, door_dir_t *dir)
 {
     const char *p = strstr(req->uri, "/doors/");
     if (!p) return 0;
@@ -2014,8 +2098,16 @@ static int uri_door_number(const httpd_req_t *req)
     char *end = NULL;
     long n = strtol(p, &end, 10);
     if (end == p || n < 1 || n > CFG_MAX_DOORS) return 0;
-    if (strncmp(end, "/open", 5) != 0 || (end[5] && end[5] != '?')) return -1;
-    return (int)n;
+    static const struct { const char *name; size_t len; door_dir_t dir; } acts[] = {
+        { "/open", 5, DOOR_DIR_UP }, { "/close", 6, DOOR_DIR_DOWN },
+    };
+    for (size_t i = 0; i < sizeof(acts) / sizeof(acts[0]); i++) {
+        if (strncmp(end, acts[i].name, acts[i].len) == 0 && (!end[acts[i].len] || end[acts[i].len] == '?')) {
+            *dir = acts[i].dir;
+            return (int)n;
+        }
+    }
+    return -1;
 }
 
 static esp_err_t h_v1_door_open(httpd_req_t *req)
@@ -2023,12 +2115,13 @@ static esp_err_t h_v1_door_open(httpd_req_t *req)
     api_token_t t;
     char ip[48];
     if (!require_bearer(req, true, &t, ip, sizeof(ip))) return ESP_OK;
-    int n = uri_door_number(req);
-    if (n < 0) return send_error(req, "404 Not Found", "Unbekannte Aktion, erwartet /api/v1/doors/<n>/open");
+    door_dir_t dir = DOOR_DIR_UP;
+    int n = uri_door_number(req, &dir);
+    if (n < 0) return send_error(req, "404 Not Found", "Unbekannte Aktion, erwartet /api/v1/doors/<n>/open oder /close");
     if (n == 0) return send_error(req, "404 Not Found", "Tuer nicht vorhanden");
     if (!t.can_open || !(t.doors & (1u << (n - 1)))) {
-        event_log(EV_DENIED, "API: Token '%s' darf Tuer %d nicht oeffnen (%s)", t.name, n, ip);
-        return send_error(req, "403 Forbidden", "Token darf diese Tuer nicht oeffnen");
+        event_log(EV_DENIED, "API: Token '%s' darf Tuer %d nicht bedienen (%s)", t.name, n, ip);
+        return send_error(req, "403 Forbidden", "Token darf diese Tuer nicht bedienen");
     }
     uint32_t pulse = 0;
     if (req->content_len > 0) {
@@ -2041,13 +2134,16 @@ static esp_err_t h_v1_door_open(httpd_req_t *req)
     }
     char reason[96];
     snprintf(reason, sizeof(reason), "API '%s' von %s", t.name, ip);
-    esp_err_t err = door_open(n - 1, reason, pulse);
-    if (err == ESP_ERR_INVALID_STATE) return send_error(req, "409 Conflict", "Tuer ist deaktiviert");
-    if (err != ESP_OK) return send_error(req, "500 Internal Server Error", "Relais konnte nicht geschaltet werden");
+    esp_err_t err = dir == DOOR_DIR_DOWN ? door_close(n - 1, reason, pulse) : door_open(n - 1, reason, pulse);
+    bool sent;
+    esp_err_t r = door_action_error(req, err, &sent);
+    if (sent) return r;
     cJSON *o = cJSON_CreateObject();
     cJSON_AddBoolToObject(o, "ok", true);
     cJSON_AddNumberToObject(o, "door", n);
     cJSON_AddStringToObject(o, "name", door_name(n - 1));
+    cJSON_AddStringToObject(o, "kind", door_kind_name(g_settings.door_ext[n - 1].kind));
+    cJSON_AddStringToObject(o, "direction", door_dir_name(dir));
     return send_json(req, o);
 }
 
@@ -2127,6 +2223,7 @@ static const httpd_uri_t s_routes[] = {
     ROUTE("/api/codes/*",              HTTP_PUT,    h_codes_put),
     ROUTE("/api/codes/*",              HTTP_DELETE, h_codes_delete),
     ROUTE("/api/door/open",            HTTP_POST,   h_door_open),
+    ROUTE("/api/door/close",           HTTP_POST,   h_door_close),
     ROUTE("/api/keypad/raw",           HTTP_GET,    h_keypad_raw),
     ROUTE("/api/system",               HTTP_GET,    h_system_get),
     ROUTE("/api/system",               HTTP_POST,   h_system_post),

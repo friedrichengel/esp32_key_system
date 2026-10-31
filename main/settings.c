@@ -1,5 +1,6 @@
 #include "settings.h"
 
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 #include "esp_log.h"
@@ -25,6 +26,14 @@ void settings_door_defaults(settings_door_t *d, int idx)
     d->exit_button_enable = false;
 }
 
+void settings_door_ext_defaults(settings_door_ext_t *e, int idx)
+{
+    memset(e, 0, sizeof(*e));
+    e->kind = DOOR_KIND_OPENER;
+    e->relay_up = (uint8_t)idx;                             /* eigenes Relais */
+    e->relay_down = (uint8_t)((idx + 1) % CFG_MAX_DOORS);   /* Vorschlag: das nächste */
+}
+
 void settings_set_defaults(settings_t *s)
 {
     memset(s, 0, sizeof(*s));
@@ -45,6 +54,7 @@ void settings_set_defaults(settings_t *s)
 
     for (int i = 0; i < CFG_MAX_DOORS; i++) {
         settings_door_defaults(&s->doors[i], i);
+        settings_door_ext_defaults(&s->door_ext[i], i);
     }
 
     s->keypad.baud = CFG_KEYPAD_BAUD_DEFAULT;
@@ -62,17 +72,28 @@ void settings_set_defaults(settings_t *s)
     s->admin.setup_done = false;
 }
 
-/* v3 -> v4: site wurde am Ende angehängt, der alte Blob ist ein Präfix des neuen. */
-#define SETTINGS_V3_SIZE (sizeof(settings_t) - sizeof(settings_site_t))
+/* Jede Version hängt nur am Ende an, der alte Blob ist ein Präfix des neuen:
+ * v4 -> v5: door_ext[] (Türtyp/Rolltor-Relais), v3 -> v4: site (Loginseiten-Infos). */
+#define SETTINGS_ROUND(n) (((n) + _Alignof(settings_t) - 1) / _Alignof(settings_t) * _Alignof(settings_t))
+#define SETTINGS_V4_END  offsetof(settings_t, door_ext)         /* Nutzdaten des v4-Blobs       */
+#define SETTINGS_V4_SIZE SETTINGS_ROUND(SETTINGS_V4_END)        /* sizeof des alten Structs     */
+#define SETTINGS_V3_END  offsetof(settings_t, site)
+#define SETTINGS_V3_SIZE SETTINGS_ROUND(SETTINGS_V3_END)
 
-/* Blob mit anderer Version/Größe übernehmen, soweit das Layout es erlaubt; sonst Defaults. */
+/* Blob mit anderer Version/Größe übernehmen, soweit das Layout es erlaubt; sonst Defaults.
+ * s enthält beim Aufruf bereits die Defaults, nur der Präfix wird überschrieben. */
 static bool settings_migrate(settings_t *s, const settings_t *old, uint32_t from_version, size_t old_len)
 {
-    if (from_version == 3 && old_len == SETTINGS_V3_SIZE) {
-        memcpy(s, old, SETTINGS_V3_SIZE);
-        memset(&s->site, 0, sizeof(s->site));
+    if (from_version == 4 && old_len == SETTINGS_V4_SIZE) {
+        memcpy(s, old, SETTINGS_V4_END);
         s->version = SETTINGS_VERSION;
-        ESP_LOGW(TAG, "Konfiguration v3 -> v4 migriert (Loginseiten-Infos leer)");
+        ESP_LOGW(TAG, "Konfiguration v4 -> v5 migriert (alle Tueren als Tueroeffner)");
+        return true;
+    }
+    if (from_version == 3 && old_len == SETTINGS_V3_SIZE) {
+        memcpy(s, old, SETTINGS_V3_END);
+        s->version = SETTINGS_VERSION;
+        ESP_LOGW(TAG, "Konfiguration v3 -> v5 migriert (Loginseiten-Infos leer, Tueren als Tueroeffner)");
         return true;
     }
     ESP_LOGW(TAG, "Konfiguration v%" PRIu32 " (%u Byte) nicht migrierbar, Defaults", from_version, (unsigned)old_len);

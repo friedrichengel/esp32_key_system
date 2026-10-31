@@ -5,7 +5,7 @@ Alle Antworten sind JSON (`application/json`, `Cache-Control: no-store`). Fehler
 - **Web-API** (`/api/...`): Session-Cookie `ks_session` (HttpOnly, Secure, SameSite=Strict). Schreibende Routen verlangen zusätzlich den Header `X-CSRF-Token` aus `/api/session` bzw. der Login-Antwort.
 - **API v1 für Drittsysteme** (`/api/v1/...`): Header `Authorization: Bearer ks1.<id>.<secret>`, kein Cookie, kein CSRF. Token werden in der Admin-UI (Seite „API“) angelegt.
 
-Türen sind in der API **1-basiert** (`door: 1..4`), Türmasken sind Bitmasken (Bit 0 = Tür 1).
+Türen sind in der API **1-basiert** (`door: 1..4`), Türmasken sind Bitmasken (Bit 0 = Tür 1). Jede Tür hat einen Typ `kind`: `opener` (Türöffner, ein Relais) oder `gate` (Rolltor, zwei Relais aus dem Pool `relay_up`/`relay_down`, Relaisnummern 1..4). Bei einem Rolltor bedeutet „öffnen“ einen Impuls auf das Auf-Relais, `close` einen Impuls auf das Ab-Relais; beide sind gegeneinander verriegelt.
 
 ## Rollen
 
@@ -46,7 +46,7 @@ Benutzer-Felder in Session- und Login-Antwort: `uid`, `role` (`admin`|`user`), `
 
 | Methode | Pfad | Beschreibung |
 |---|---|---|
-| GET | `/api/status` | `admin` (bool), `firmware`, `system` (Uptime, Zeit, TLS; Admin zusätzlich Heap, FS), `keypad` (`door`, `locked`, `lock_remaining_s`; Admin zusätzlich `fail_count`, `rx_count`, `last_rx_uptime_s`, `learn_mode`), `doors[]` (`door`, `name`, `enabled`, `relay_active`, `contact_enabled`, `contact_closed`, `last_open_uptime_s`), `codes_count` (Benutzer: eigene). Nur Admin: `network`, `tokens_count`, `users_count` |
+| GET | `/api/status` | `admin` (bool), `firmware`, `system` (Uptime, Zeit, TLS; Admin zusätzlich Heap, FS), `keypad` (`door`, `locked`, `lock_remaining_s`; Admin zusätzlich `fail_count`, `rx_count`, `last_rx_uptime_s`, `learn_mode`), `doors[]` (`door`, `name`, `enabled`, `kind`, `relay_active`, `direction` (`up`/`down`/leer, nur während ein Relais angezogen ist), `last_direction`, `contact_enabled`, `contact_closed`, `last_open_uptime_s` (letzter Befehl, bei Rolltor auf oder ab)), `codes_count` (Benutzer: eigene). Nur Admin: `network`, `tokens_count`, `users_count` |
 | GET | `/api/log?max=N&after=ID` | **Admin.** Ereignisse neueste zuerst, `{last_id, entries:[{id, ts, uptime, cat, msg}]}` |
 
 ## Codes
@@ -72,7 +72,8 @@ Regeln (serverseitig):
 
 | Methode | Pfad | Beschreibung |
 |---|---|---|
-| POST | `/api/door/open` | Body optional `{door: n}` (Default: Tür des Keypads); Relais-Impuls mit eingestellter Dauer → `{ok, door, name}`; Benutzer brauchen `open_doors` und die Tür in ihrer Maske (403); 404 unbekannte Tür, 409 Tür deaktiviert |
+| POST | `/api/door/open` | Body optional `{door: n}` (Default: Tür des Keypads); Relais-Impuls mit eingestellter Dauer, beim Rolltor auf dem Auf-Relais → `{ok, door, name, kind, direction}`; Benutzer brauchen `open_doors` und die Tür in ihrer Maske (403); 404 unbekannte Tür, 409 Tür deaktiviert oder Relais nicht verfügbar |
+| POST | `/api/door/close` | wie `open`, aber Impuls auf dem Ab-Relais eines Rolltors → `{ok, door, name, kind, direction: "down"}`; 409 bei einem Türöffner |
 | GET | `/api/keypad/raw` | **Admin.** Lernmodus: `{count, rx_total, last_rx_uptime_s, hex, ascii}` |
 
 ## Benutzer (Admin)
@@ -105,7 +106,8 @@ Token-Objekt: `{id, name, doors, can_open, can_status, enabled, allow_ip, expire
 |---|---|---|
 | GET | `/api/v1/status` | `{hostname, firmware, uptime_s, time, time_valid, link, keypad_locked, doors:[...]}`; `doors` enthält nur aktive Türen, die das Token sehen darf. Recht `can_status` |
 | GET | `/api/v1/doors` | `{doors:[...]}` wie oben. Recht `can_status` |
-| POST | `/api/v1/doors/<n>/open` | Body optional `{pulse_ms}` (wird auf 500–30000 begrenzt) → `{ok, door, name}`. Recht `can_open` und Tür in der Maske; 403 sonst, 404 unbekannte Tür, 409 Tür deaktiviert |
+| POST | `/api/v1/doors/<n>/open` | Body optional `{pulse_ms}` (wird auf 500–30000 begrenzt) → `{ok, door, name, kind, direction}`. Rolltor: Impuls auf dem Auf-Relais. Recht `can_open` und Tür in der Maske; 403 sonst, 404 unbekannte Tür, 409 Tür deaktiviert |
+| POST | `/api/v1/doors/<n>/close` | nur Rolltor: Impuls auf dem Ab-Relais, sonst wie `open`; 409 bei einem Türöffner |
 
 Fehler: 401 (Token fehlt, Format ungültig, unbekannt), 403 (gesperrt, abgelaufen, Quelladresse nicht erlaubt, Recht fehlt), 429 mit `Retry-After` nach 10 Fehlversuchen je Quell-IP (Sperre 60 s, verdoppelt sich bis 15 min). Jede Nutzung und jeder Fehlversuch steht im Protokoll mit Token-Name bzw. Quell-IP, nie mit dem Secret.
 
@@ -119,7 +121,7 @@ curl -k -X POST https://keysystem.local/api/v1/doors/1/open \
 | Methode | Pfad | Beschreibung |
 |---|---|---|
 | GET/POST | `/api/network` | Hostname, IPv4 (dhcp/static), DNS, IPv6 (SLAAC, statisch), NTP, TZ → `reboot_required` |
-| GET/POST | `/api/system` | `{doors:[{door, enabled, name, relay_pulse_ms, relay_active_low, door_contact_enable, exit_button_enable, pins:{relay, contact, rex}}], max_doors, keypad:{baud, parity, frame_mode, terminator, clear_key, fixed_len, timeout_ms, learn_mode, door}, site:{name, support_email, info_text}, admin_user, pins}`; POST nimmt `doors` (Array, Teilmenge erlaubt), `keypad` und/oder `site`. `terminator`/`clear_key`: ein Zeichen, `CR`, `LF`, `BS`, `none` oder Hex wie `0x08`. `site`: Name max. 31, E-Mail max. 63 (einfache Formatprüfung), Text max. 511 Zeichen |
+| GET/POST | `/api/system` | `{doors:[{door, enabled, name, kind ("opener"\|"gate"), relay_up, relay_down (Relaisnummern 1..4, nur bei gate genutzt), relay_pulse_ms, relay_active_low, door_contact_enable, exit_button_enable, pins:{relay, relay_up, relay_down, contact, rex}}], max_doors, relays:[{relay, gpio}], keypad:{baud, parity, frame_mode, terminator, clear_key, fixed_len, timeout_ms, learn_mode, door}, site:{name, support_email, info_text}, admin_user, pins}`; POST nimmt `doors` (Array, Teilmenge erlaubt; 400 wenn ein Relais zwei aktiven Türen gehört oder ein Rolltor dasselbe Relais für Auf und Ab hat), `keypad` und/oder `site`. `terminator`/`clear_key`: ein Zeichen, `CR`, `LF`, `BS`, `none` oder Hex wie `0x08`. `site`: Name max. 31, E-Mail max. 63 (einfache Formatprüfung), Text max. 511 Zeichen |
 | POST | `/api/system/password` | nur Admin-Hauptkonto: `{user, old_password, new_password}` – Name und/oder Passwort; Name darf keinem Benutzer gehören (409) |
 | POST | `/api/system/reboot` | Neustart nach 1,5 s |
 | POST | `/api/system/factory-reset` | Settings, Benutzer, Codes, Token, Zertifikat löschen, Neustart |

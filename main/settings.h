@@ -12,7 +12,7 @@
 #include "esp_err.h"
 #include "config.h"
 
-#define SETTINGS_VERSION        4               /* v4: site (Loginseite), v3: doors[], keypad.door */
+#define SETTINGS_VERSION        5               /* v5: door_ext[] (Rolltor), v4: site, v3: doors[], keypad.door */
 #define SETTINGS_TOTP_SECRET_LEN 20
 #define SETTINGS_RECOVERY_COUNT 8
 #define SETTINGS_STR_SHORT      32
@@ -57,11 +57,27 @@ typedef struct {
 typedef struct {
     bool     enabled;
     char     name[SETTINGS_STR_SHORT];
-    uint16_t relay_pulse_ms;
-    bool     relay_active_low;
+    uint16_t relay_pulse_ms;                /* Impulsdauer; Rolltor: je Fahrbefehl        */
+    bool     relay_active_low;              /* gilt für alle Relais dieser Tür            */
     bool     door_contact_enable;
     bool     exit_button_enable;
 } settings_door_t;
+
+typedef enum {
+    DOOR_KIND_OPENER = 0,                   /* Türöffner: ein Relais, Impuls = auf        */
+    DOOR_KIND_GATE   = 1,                   /* Rolltor: zwei Relais, Auf und Ab           */
+} door_kind_t;
+
+/* Erweiterung je Tür (ab v5, eigenes Array, damit der alte Blob ein Präfix bleibt).
+ * Die CFG_MAX_DOORS Relais-Pins bilden einen Pool (Relais 1..4). Ein Türöffner nutzt fest
+ * das Relais mit seinem Index, ein Rolltor die hier gewählten zwei; jedes Relais darf nur
+ * einer aktiven Tür gehören (door_settings_check). */
+typedef struct {
+    uint8_t  kind;                          /* door_kind_t                                */
+    uint8_t  relay_up;                      /* Relaisindex 0..CFG_MAX_DOORS-1 für "Auf"   */
+    uint8_t  relay_down;                    /* Relaisindex für "Ab"                       */
+    uint8_t  reserved;
+} settings_door_ext_t;
 
 typedef enum {
     KEYPAD_FRAME_TERMINATOR = 0,            /* Code endet mit Abschlusszeichen      */
@@ -113,6 +129,7 @@ typedef struct {
     settings_admin_t   admin;
     settings_twofa_t   twofa;                         /* 2FA des Admins; Benutzer: users.json   */
     settings_site_t    site;                          /* ab v4                                   */
+    settings_door_ext_t door_ext[CFG_MAX_DOORS];      /* ab v5: Türtyp, Rolltor-Relais           */
 } settings_t;
 
 /* Globale Instanz; nach settings_init() gültig. Schreibzugriff nur über settings_save(). */
@@ -122,4 +139,5 @@ esp_err_t settings_init(void);            /* lädt aus NVS oder legt Defaults an
 esp_err_t settings_save(void);            /* schreibt g_settings nach NVS          */
 void      settings_set_defaults(settings_t *s);
 void      settings_door_defaults(settings_door_t *d, int idx);
+void      settings_door_ext_defaults(settings_door_ext_t *e, int idx);
 esp_err_t settings_factory_reset(void);   /* löscht den NVS-Namespace              */

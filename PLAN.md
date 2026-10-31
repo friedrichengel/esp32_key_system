@@ -241,6 +241,17 @@ Speicherung: NVS-Namespace `codes`, bis ~200 Einträge, Codes im Klartext. Ehrli
 
 ---
 
+## 8e. Türtyp Rolltor mit Auf- und Ab-Relais (umgesetzt 31.10.2026)
+
+- Jede Tür hat einen Typ: **Türöffner** (wie bisher, ein Relais, Impuls öffnet) oder **Rolltor** (zwei Relais, eines für Auf, eines für Ab). Die vier Relais-Pins bilden einen Pool „Relais 1–4“; ein Rolltor wählt zwei davon, ein Türöffner nutzt fest das Relais mit seinem Türindex. Jedes Relais darf nur einer aktiven Tür gehören (`door_settings_check()`, 400 beim Speichern und beim Restore).
+- Settings: neues Array `door_ext[CFG_MAX_DOORS]` (`kind`, `relay_up`, `relay_down`) **am Ende** von `settings_t` → `SETTINGS_VERSION 5`, Migration v4→v5 und v3→v5 per Präfix (alle Türen bleiben Türöffner). Polarität (`relay_active_low`) gilt für alle Relais einer Tür.
+- `door_relay.c`: `door_open()` = Impuls auf Auf-Relais, neues `door_close()` = Impuls auf Ab-Relais; Auf und Ab verriegelt (Gegenrichtung lässt das laufende Relais sofort los). Keypad-Code und REX fahren auf. Protokoll: „Rolltor n 'Name' faehrt auf/ab (Grund), Relais r, ms“.
+- API: `/api/door/close` (Session + CSRF, Recht `open_doors`), `/api/v1/doors/<n>/close` (Bearer, `can_open`); Status liefert `kind`, `direction`, `last_direction`; `/api/system` liefert `kind`, `relay_up`, `relay_down`, `relays[]`.
+- UI: Typ und Relaisauswahl je Tür unter System → Türen und Relais, Übersicht zeigt beim Rolltor „Auf“/„Ab“-Buttons und den letzten Fahrbefehl.
+- Offen: auf Hardware mit echter Torsteuerung testen; evtl. Stopp-Befehl und Keypad-Code als Auf/Ab-Wechsel.
+
+---
+
 ## 9. Sicherheit (Web/Betrieb)
 
 - Erststart: Setup-Assistent erzwingt ein Admin-Passwort (kein Default-Passwort). Passwort-Hash PBKDF2-HMAC-SHA256 (mbedTLS), 100k Iterationen.

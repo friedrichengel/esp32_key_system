@@ -163,16 +163,27 @@
     const s = await api('/api/status');
     doorsBrief = s.doors.map(d => ({ door: d.door, name: d.name, enabled: d.enabled }));
     const active = s.doors.filter(d => d.enabled);
-    $('#dash-doors').innerHTML = active.map(d => `
+    $('#dash-doors').innerHTML = active.map(d => {
+      const gate = d.kind === 'gate';
+      const dirText = dir => dir === 'down' ? 'ab' : 'auf';
+      const badge = d.relay_active ? (gate ? `fährt ${dirText(d.direction)}` : 'Relais aktiv') : (gate ? 'Antrieb bereit' : 'Relais aus');
+      const last = d.last_open_uptime_s
+        ? 'vor ' + fmtUptime(s.system.uptime_s - d.last_open_uptime_s) + (gate ? ` (${dirText(d.last_direction)})` : '')
+        : 'seit Start keine';
+      const buttons = !canOpen(d.door) ? ''
+        : gate ? `<div class="row2"><button data-act="open">&#9650; Auf</button><button data-act="close">&#9660; Ab</button></div>`
+        : `<button data-act="open">${esc(d.name)} öffnen</button>`;
+      return `
       <div class="door ${d.relay_active ? 'open' : ''}" data-door="${d.door}">
-        <div class="row" style="justify-content:space-between;margin:0 0 6px"><strong>${esc(d.name)}</strong>
-          <span class="badge ${d.relay_active ? 'warn' : 'ok'}">${d.relay_active ? 'Relais aktiv' : 'Relais aus'}</span></div>
+        <div class="row" style="justify-content:space-between;margin:0 0 6px"><strong>${esc(d.name)}</strong>${gate ? ' <span class="hint">Rolltor</span>' : ''}
+          <span class="badge ${d.relay_active ? 'warn' : 'ok'}">${badge}</span></div>
         <div class="kv">
-          <div class="k">Türkontakt</div><div class="v ${d.contact_enabled && !d.contact_closed ? 'warn' : ''}">${d.contact_enabled ? (d.contact_closed ? 'geschlossen' : 'offen') : 'nicht konfiguriert'}</div>
-          <div class="k">Letzte Öffnung</div><div class="v">${d.last_open_uptime_s ? 'vor ' + fmtUptime(s.system.uptime_s - d.last_open_uptime_s) : 'seit Start keine'}</div>
+          <div class="k">${gate ? 'Torkontakt' : 'Türkontakt'}</div><div class="v ${d.contact_enabled && !d.contact_closed ? 'warn' : ''}">${d.contact_enabled ? (d.contact_closed ? 'geschlossen' : 'offen') : 'nicht konfiguriert'}</div>
+          <div class="k">${gate ? 'Letzter Fahrbefehl' : 'Letzte Öffnung'}</div><div class="v">${last}</div>
         </div>
-        ${canOpen(d.door) ? `<button data-act="open">${esc(d.name)} öffnen</button>` : ''}
-      </div>`).join('') || '<p class="hint">Keine Tür aktiv (System → Türen und Relais).</p>';
+        ${buttons}
+      </div>`;
+    }).join('') || '<p class="hint">Keine Tür aktiv (System → Türen und Relais).</p>';
     const k = s.keypad;
     const kpRows = [
       ['Zugeordnete Tür', esc(doorName(doorsBrief, k.door)), doorsBrief.find(d => d.door === k.door && d.enabled) ? '' : 'warn'],
@@ -215,11 +226,16 @@
     }
   }
   $('#dash-doors').addEventListener('click', async (ev) => {
-    const btn = ev.target.closest('button[data-act=open]');
+    const btn = ev.target.closest('button[data-act]');
     if (!btn) return;
     const n = Number(btn.closest('.door').dataset.door);
+    const act = btn.dataset.act === 'close' ? 'close' : 'open';
     btn.disabled = true;
-    try { const r = await api('/api/door/open', { method: 'POST', json: { door: n } }); toast(`${r.name} geöffnet`, 'ok'); loadDashboard().catch(() => {}); }
+    try {
+      const r = await api('/api/door/' + act, { method: 'POST', json: { door: n } });
+      toast(r.kind === 'gate' ? `${r.name} fährt ${r.direction === 'down' ? 'ab' : 'auf'}` : `${r.name} geöffnet`, 'ok');
+      loadDashboard().catch(() => {});
+    }
     catch (e) { toast(e.message, 'bad'); }
     btn.disabled = false;
   });
@@ -547,10 +563,13 @@
     }).join('') || '<tr><td colspan="9" class="hint">Noch keine Token angelegt.</td></tr>';
     const host = location.host;
     $('#api-example').textContent =
-`# Tür 1 öffnen (Impulsdauer optional, in ms)
+`# Tür 1 öffnen (Rolltor: auf; Impulsdauer optional, in ms)
 curl -k -X POST https://${host}/api/v1/doors/1/open \\
      -H "Authorization: Bearer ks1.xxxxxxxx.yyyyyyyy…" \\
      -H "Content-Type: application/json" -d '{"pulse_ms": 3000}'
+
+# Rolltor 1 ab (nur bei Türtyp Rolltor)
+curl -k -X POST https://${host}/api/v1/doors/1/close -H "Authorization: Bearer ks1.…"
 
 # Status (Türen, Kontakt, Relais, Link)
 curl -k https://${host}/api/v1/status -H "Authorization: Bearer ks1.…"
@@ -717,18 +736,32 @@ sensor:
   });
 
   /* ---------- System ---------- */
-  function renderDoorForms(doors) {
+  function relayOptions(relays, selected) {
+    return relays.map(r => `<option value="${r.relay}" ${r.relay === selected ? 'selected' : ''}>Relais ${r.relay} (GPIO${r.gpio})</option>`).join('');
+  }
+  function renderDoorForms(doors, relays) {
     $('#doors-forms').innerHTML = doors.map(d => `
-      <fieldset data-door="${d.door}"><legend>Tür ${d.door} · Relais GPIO${d.pins.relay}, Kontakt GPIO${d.pins.contact}, REX GPIO${d.pins.rex}</legend>
+      <fieldset data-door="${d.door}"><legend>Tür ${d.door} · eigenes Relais ${d.door} = GPIO${d.pins.relay}, Kontakt GPIO${d.pins.contact}, REX GPIO${d.pins.rex}</legend>
         <div class="grid2">
           <label><input type="checkbox" name="enabled" ${d.enabled ? 'checked' : ''}> Tür aktiv</label>
           <label>Name <input name="name" maxlength="31" value="${esc(d.name)}" required></label>
-          <label>Relais-Impulsdauer (ms) <input name="relay_pulse_ms" type="number" min="500" max="30000" step="100" value="${d.relay_pulse_ms}"></label>
+          <label>Typ <select name="kind">
+            <option value="opener" ${d.kind !== 'gate' ? 'selected' : ''}>Türöffner (Relais ${d.door}, Impuls öffnet)</option>
+            <option value="gate" ${d.kind === 'gate' ? 'selected' : ''}>Rolltor (zwei Relais: Auf und Ab)</option>
+          </select></label>
+          <label>Impulsdauer (ms) <input name="relay_pulse_ms" type="number" min="500" max="30000" step="100" value="${d.relay_pulse_ms}"></label>
+          <label data-gate>Relais Auf <select name="relay_up">${relayOptions(relays, d.relay_up)}</select></label>
+          <label data-gate>Relais Ab <select name="relay_down">${relayOptions(relays, d.relay_down)}</select></label>
           <label><input type="checkbox" name="relay_active_low" ${d.relay_active_low ? 'checked' : ''}> Relaismodul ist Active-Low</label>
-          <label><input type="checkbox" name="door_contact_enable" ${d.door_contact_enable ? 'checked' : ''}> Türkontakt angeschlossen</label>
-          <label><input type="checkbox" name="exit_button_enable" ${d.exit_button_enable ? 'checked' : ''}> Austaster (REX) angeschlossen</label>
+          <label><input type="checkbox" name="door_contact_enable" ${d.door_contact_enable ? 'checked' : ''}> Tür-/Torkontakt angeschlossen</label>
+          <label><input type="checkbox" name="exit_button_enable" ${d.exit_button_enable ? 'checked' : ''}> Austaster (REX) angeschlossen (Rolltor: fährt auf)</label>
         </div>
       </fieldset>`).join('');
+    $$('#doors-forms select[name=kind]').forEach(sel => {
+      const update = () => $$('[data-gate]', sel.closest('fieldset')).forEach(l => l.classList.toggle('hidden', sel.value !== 'gate'));
+      sel.addEventListener('change', update);
+      update();
+    });
   }
   function renderKeypadDoorSelect(doors, selected) {
     $('#keypad-door').innerHTML = doors.map(d =>
@@ -737,7 +770,7 @@ sensor:
   async function loadSystem() {
     const s = await api('/api/system');
     doorsBrief = s.doors.map(d => ({ door: d.door, name: d.name, enabled: d.enabled }));
-    renderDoorForms(s.doors);
+    renderDoorForms(s.doors, s.relays || []);
     renderKeypadDoorSelect(s.doors, s.keypad.door);
     fillForm($('#form-keypad'), s.keypad);
     fillForm($('#form-site'), s.site);
@@ -954,6 +987,7 @@ sensor:
 
   onSubmit('#form-doors', async () => {
     const doors = $$('#doors-forms fieldset').map(fs => Object.assign({ door: Number(fs.dataset.door) }, formData(fs)));
+    doors.forEach(d => { d.relay_up = Number(d.relay_up); d.relay_down = Number(d.relay_down); });
     await api('/api/system', { method: 'POST', json: { doors } });
     toast('Gespeichert', 'ok');
     await loadSystem();

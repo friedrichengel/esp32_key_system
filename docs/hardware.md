@@ -66,4 +66,6 @@ Weitere Türen (ab Werk deaktiviert, Pins bleiben dann unberührt; Zuordnung in 
 
 GPIO2 und GPIO3 (J2-7, J2-10) bleiben als Reserve frei. Das eine Keypad (UART1, GPIO37/38) ist in den Einstellungen einer dieser Türen zugeordnet.
 
+**Rolltor:** Die vier Relais-Ausgänge bilden einen Pool (Relais 1–4 = GPIO40/43/46/49). Eine Tür vom Typ „Rolltor“ belegt zwei davon, eines für Auf und eines für Ab (Auswahl in System → Türen und Relais); die Tür, der das zweite Relais eigentlich gehört, muss dann deaktiviert sein. Beide Relais-Schließer gehen parallel zu den Auf-/Ab-Tastern der Torsteuerung, je Fahrbefehl ein Impuls (Impulsdauer der Tür, typisch 0,5–1 s). Die Firmware zieht nie beide Relais gleichzeitig an; ein Befehl in die Gegenrichtung lässt das laufende Relais sofort los. Torkontakt und Austaster hängen weiter an den Pins der jeweiligen Tür (Austaster fährt auf).
+
 Stromversorgung: 5 V über J2 oder USB-C; Türöffner aus eigenem Netzteil, nie aus dem Board.
