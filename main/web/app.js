@@ -209,7 +209,11 @@
         ['PSRAM frei', Math.round(s.system.psram_free / 1024) + ' KB'],
         ['Dateisystem', Math.round(s.system.fs_used / 1024) + ' / ' + Math.round(s.system.fs_total / 1024) + ' KB']);
       kv($('#dash-net'), [
-        ['Link', s.network.link ? `${s.network.speed} Mbit/s ${s.network.full_duplex ? 'Vollduplex' : 'Halbduplex'}` : 'kein Link', s.network.link ? 'ok' : 'bad'],
+        ['Link', s.network.link ? `${s.network.speed} Mbit/s ${s.network.full_duplex ? 'Vollduplex' : 'Halbduplex'}` : 'kein Link', s.network.link ? 'ok' : (s.network.wifi && s.network.wifi.connected ? 'warn' : 'bad')],
+        ['WLAN', !s.network.wifi_enabled ? 'aus'
+          : s.network.wifi.connected ? `${esc(s.network.wifi.ssid)}, ${s.network.wifi.rssi} dBm, Kanal ${s.network.wifi.channel}` + (s.network.wifi.has_ip4 ? `, ${s.network.wifi.ip4}` : ', keine IPv4') + (s.network.wifi.ip6.length ? '<br>' + s.network.wifi.ip6.join('<br>') : '')
+          : `${esc(s.network.wifi.ssid)}: nicht verbunden`,
+          !s.network.wifi_enabled ? '' : s.network.wifi.connected ? 'ok' : 'warn'],
         ['Hostname', s.network.hostname + '.local'],
         ['IPv4', s.network.has_ip4 ? `${s.network.ip4} / ${s.network.mask4}` + (s.network.ip4_fallback ? ' (Rückfall, kein DHCP)' : s.network.ip4_mode === 'static' ? ' (statisch)' : ' (DHCP)') : 'keine', s.network.has_ip4 ? (s.network.ip4_fallback ? 'warn' : '') : 'warn'],
         ['Gateway', s.network.gw4],
@@ -641,9 +645,13 @@ sensor:
   });
 
   /* ---------- Netzwerk ---------- */
+  let wifiPasswordSet = false;
   async function loadNetwork() {
     const n = await api('/api/network');
+    wifiPasswordSet = !!n.wifi_password_set;
     fillForm($('#form-network'), n);
+    $('#form-network').wifi_password.value = '';
+    $('#form-network').wifi_password_clear.checked = false;
     toggleNetFields();
   }
   function toggleNetFields() {
@@ -651,8 +659,27 @@ sensor:
     const st = f.ipv4_mode.value === 'static';
     $('#ipv4-static').classList.toggle('hidden', !st);
     $('#ipv6-static').classList.toggle('hidden', !f.ipv6_static_enable.checked);
+    $('#wifi-fields').classList.toggle('hidden', !f.wifi_enabled.checked);
+    f.wifi_password.placeholder = wifiPasswordSet ? 'unverändert lassen' : '8 bis 63 Zeichen';
+    $('#wifi-pw-hint').textContent = wifiPasswordSet ? 'Ein Passwort ist gespeichert und wird nie angezeigt. Leer lassen, um es zu behalten.' : 'Noch kein Passwort gespeichert.';
     $('#net-mdns').textContent = f.hostname.value || 'hostname';
   }
+  $('#wifi-scan').addEventListener('click', async () => {
+    const btn = $('#wifi-scan'), sel = $('#wifi-found');
+    btn.disabled = true; btn.textContent = 'Suche läuft …';
+    try {
+      const r = await api('/api/network/wifi-scan');
+      $('#wifi-ssids').innerHTML = r.networks.map(n => `<option value="${esc(n.ssid)}">`).join('');
+      sel.innerHTML = '<option value="">Gefundenes Netz übernehmen …</option>' + r.networks.map(n =>
+        `<option value="${esc(n.ssid)}">${esc(n.ssid)} (${n.rssi} dBm, Kanal ${n.channel}${n.open ? ', offen' : ''})</option>`).join('');
+      sel.classList.toggle('hidden', !r.networks.length);
+      toast(r.networks.length ? `${r.networks.length} Netz(e) gefunden` : 'Kein WLAN gefunden', r.networks.length ? 'ok' : 'bad');
+    } catch (e) { toast(e.message, 'bad'); }
+    btn.disabled = false; btn.textContent = 'Netze suchen';
+  });
+  $('#wifi-found').addEventListener('change', (ev) => {
+    if (ev.target.value) $('#form-network').wifi_ssid.value = ev.target.value;
+  });
 
   /* ---------- Zertifikat ---------- */
   async function loadCert() {
@@ -743,7 +770,6 @@ sensor:
     $('#doors-forms').innerHTML = doors.map(d => `
       <fieldset data-door="${d.door}"><legend>Tür ${d.door} · eigenes Relais ${d.door} = GPIO${d.pins.relay}, Kontakt GPIO${d.pins.contact}, REX GPIO${d.pins.rex}</legend>
         <div class="grid2">
-          <label><input type="checkbox" name="enabled" ${d.enabled ? 'checked' : ''}> Tür aktiv</label>
           <label>Name <input name="name" maxlength="31" value="${esc(d.name)}" required></label>
           <label>Typ <select name="kind">
             <option value="opener" ${d.kind !== 'gate' ? 'selected' : ''}>Türöffner (Relais ${d.door}, Impuls öffnet)</option>
@@ -752,9 +778,12 @@ sensor:
           <label>Impulsdauer (ms) <input name="relay_pulse_ms" type="number" min="500" max="30000" step="100" value="${d.relay_pulse_ms}"></label>
           <label data-gate>Relais Auf <select name="relay_up">${relayOptions(relays, d.relay_up)}</select></label>
           <label data-gate>Relais Ab <select name="relay_down">${relayOptions(relays, d.relay_down)}</select></label>
+        </div>
+        <div class="row">
+          <label><input type="checkbox" name="enabled" ${d.enabled ? 'checked' : ''}> Tür aktiv</label>
           <label><input type="checkbox" name="relay_active_low" ${d.relay_active_low ? 'checked' : ''}> Relaismodul ist Active-Low</label>
           <label><input type="checkbox" name="door_contact_enable" ${d.door_contact_enable ? 'checked' : ''}> Tür-/Torkontakt angeschlossen</label>
-          <label><input type="checkbox" name="exit_button_enable" ${d.exit_button_enable ? 'checked' : ''}> Austaster (REX) angeschlossen (Rolltor: fährt auf)</label>
+          <label><input type="checkbox" name="exit_button_enable" ${d.exit_button_enable ? 'checked' : ''}> Austaster (REX) angeschlossen</label>
         </div>
       </fieldset>`).join('');
     $$('#doors-forms select[name=kind]').forEach(sel => {
@@ -965,7 +994,10 @@ sensor:
   $('#form-network').addEventListener('change', toggleNetFields);
   $('#form-network').hostname.addEventListener('input', toggleNetFields);
   onSubmit('#form-network', async (f) => {
-    const r = await api('/api/network', { method: 'POST', json: formData(f) });
+    const d = formData(f);
+    if (d.wifi_enabled && !d.wifi_ssid.trim()) throw new Error('WLAN-Name (SSID) fehlt');
+    if (d.wifi_enabled && !d.wifi_password && !wifiPasswordSet && !d.wifi_password_clear) throw new Error('WLAN-Passwort eingeben oder „Passwort löschen“ für ein offenes Netz wählen');
+    const r = await api('/api/network', { method: 'POST', json: d });
     toast(r.reboot_required ? 'Gespeichert. Aktiv nach Neustart (System → Neustart).' : 'Gespeichert', 'ok');
   });
 

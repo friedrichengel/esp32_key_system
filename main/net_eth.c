@@ -1,6 +1,9 @@
 #include "net_eth.h"
 
+#include <inttypes.h>
 #include <string.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "esp_check.h"
 #include "esp_event.h"
 #include "esp_log.h"
@@ -11,6 +14,8 @@
 #include "esp_eth_mac_esp.h"
 #include "esp_eth_netif_glue.h"
 #include "esp_netif.h"
+#include "esp_wifi.h"
+#include "bootloader_random.h"
 #include "mdns.h"
 
 #include "config.h"
@@ -21,6 +26,7 @@
 
 static const char *TAG = "net";
 
+/* Ethernet */
 static esp_eth_handle_t s_eth;
 static esp_netif_t     *s_netif;
 static bool             s_link_up;
@@ -30,8 +36,18 @@ static uint8_t          s_mac[6];
 static bool             s_fallback_active;
 static esp_timer_handle_t s_dhcp_timer;
 
+/* WLAN-Station (optional) */
+static bool             s_wifi_running;        /* Treiber dauerhaft aktiv (Settings)      */
+static esp_netif_t     *s_wifi_netif;
+static bool             s_wifi_connected;
+static bool             s_wifi_has_ip4;
+static uint8_t          s_wifi_mac[6];
+static esp_timer_handle_t s_wifi_retry_timer;
+static uint32_t         s_wifi_fail_count;
+static SemaphoreHandle_t s_wifi_scan_lock;
+
 /* ------------------------------------------------------------------------
- * DHCP-Rückfall: Link da, DHCP aktiv,
+ * DHCP-Rückfall (nur Ethernet): Link da, DHCP aktiv,
  * nach CFG_DHCP_FALLBACK_TIMEOUT_S keine Adresse -> feste Adresse CFG_IPV4_FALLBACK_*.
  * Beim nächsten Link-up (Kabel neu gesteckt) wird DHCP erneut versucht.
  * ---------------------------------------------------------------------- */
@@ -155,7 +171,8 @@ static esp_err_t eth_driver_init(void)
 }
 
 /* ------------------------------------------------------------------------
- * IPv4/IPv6 aus den Settings auf das netif anwenden (vor esp_eth_start).
+ * IPv4/IPv6 aus den Settings auf das Ethernet-netif anwenden (vor esp_eth_start).
+ * Die WLAN-Station nutzt immer DHCP und SLAAC.
  * ---------------------------------------------------------------------- */
 static void apply_ipv4_settings(void)
 {
@@ -206,7 +223,7 @@ static void apply_ipv6_static(void)
 }
 
 /* ------------------------------------------------------------------------
- * mDNS
+ * mDNS (die Komponente bedient alle vorhandenen Standard-netifs, also auch WLAN)
  * ---------------------------------------------------------------------- */
 static void mdns_start(void)
 {
@@ -230,9 +247,11 @@ static void mdns_start(void)
  * ---------------------------------------------------------------------- */
 static void update_led(void)
 {
-    if (!s_link_up) {
+    bool link = s_link_up || s_wifi_connected;
+    bool ip = s_has_ip4 || s_wifi_has_ip4;
+    if (!link) {
         status_led_set(LED_NO_LINK);
-    } else if (!s_has_ip4) {
+    } else if (!ip) {
         status_led_set(LED_NO_IP);
     } else {
         status_led_set(LED_OK);
@@ -272,6 +291,56 @@ static void eth_event_handler(void *arg, esp_event_base_t base, int32_t id, void
     update_led();
 }
 
+/* WLAN: nach Abbruch mit Pause erneut verbinden; Fehlversuche nur beim ersten Mal und dann
+ * alle 10 protokollieren, damit ein falsches Passwort das Protokoll nicht flutet. */
+static void wifi_retry_cb(void *arg)
+{
+    (void)arg;
+    esp_err_t err = esp_wifi_connect();
+    if (err != ESP_OK) ESP_LOGW(TAG, "esp_wifi_connect: %s", esp_err_to_name(err));
+}
+
+static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id, void *data)
+{
+    (void)arg; (void)base;
+    if (!s_wifi_running) return;                 /* temporärer Scan-Betrieb: nichts tun */
+    switch (id) {
+    case WIFI_EVENT_STA_START:
+        ESP_LOGI(TAG, "WLAN gestartet, verbinde mit '%s'", g_settings.wifi.ssid);
+        esp_wifi_connect();
+        break;
+    case WIFI_EVENT_STA_CONNECTED: {
+        const wifi_event_sta_connected_t *ev = data;
+        s_wifi_connected = true;
+        s_wifi_fail_count = 0;
+        event_log(EV_NETWORK, "WLAN verbunden mit '%s', Kanal %u", g_settings.wifi.ssid, ev->channel);
+        esp_netif_create_ip6_linklocal(s_wifi_netif);
+        break;
+    }
+    case WIFI_EVENT_STA_DISCONNECTED: {
+        const wifi_event_sta_disconnected_t *ev = data;
+        bool was_up = s_wifi_connected;
+        s_wifi_connected = false;
+        s_wifi_has_ip4 = false;
+        if (was_up) {
+            event_log(EV_NETWORK, "WLAN getrennt (Grund %u)", ev->reason);
+        } else if (s_wifi_fail_count == 0 || s_wifi_fail_count % 10 == 0) {
+            event_log(EV_NETWORK, "WLAN '%s' nicht erreichbar (Grund %u, Versuch %" PRIu32 ")",
+                      g_settings.wifi.ssid, ev->reason, s_wifi_fail_count + 1);
+        }
+        s_wifi_fail_count++;
+        if (s_wifi_retry_timer) {
+            esp_timer_stop(s_wifi_retry_timer);
+            esp_timer_start_once(s_wifi_retry_timer, (uint64_t)CFG_WIFI_RETRY_S * 1000000);
+        }
+        break;
+    }
+    default:
+        break;
+    }
+    update_led();
+}
+
 static void ip_event_handler(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     (void)arg; (void)base;
@@ -287,14 +356,28 @@ static void ip_event_handler(void *arg, esp_event_base_t base, int32_t id, void 
         time_sync_start();
         break;
     }
+    case IP_EVENT_STA_GOT_IP: {
+        const ip_event_got_ip_t *ev = data;
+        s_wifi_has_ip4 = true;
+        event_log(EV_NETWORK, "WLAN IPv4 " IPSTR " / " IPSTR " gw " IPSTR,
+                  IP2STR(&ev->ip_info.ip), IP2STR(&ev->ip_info.netmask), IP2STR(&ev->ip_info.gw));
+        mdns_start();
+        time_sync_start();
+        break;
+    }
     case IP_EVENT_ETH_LOST_IP:
         s_has_ip4 = false;
         event_log(EV_NETWORK, "IPv4 verloren");
         break;
+    case IP_EVENT_STA_LOST_IP:
+        s_wifi_has_ip4 = false;
+        event_log(EV_NETWORK, "WLAN IPv4 verloren");
+        break;
     case IP_EVENT_GOT_IP6: {
         const ip_event_got_ip6_t *ev = data;
         esp_ip6_addr_type_t type = esp_netif_ip6_get_addr_type((esp_ip6_addr_t *)&ev->ip6_info.ip);
-        event_log(EV_NETWORK, "IPv6 " IPV6STR " (%s)", IPV62STR(ev->ip6_info.ip),
+        event_log(EV_NETWORK, "%sIPv6 " IPV6STR " (%s)", ev->esp_netif == s_wifi_netif ? "WLAN " : "",
+                  IPV62STR(ev->ip6_info.ip),
                   type == ESP_IP6_ADDR_IS_LINK_LOCAL ? "link-local" :
                   type == ESP_IP6_ADDR_IS_GLOBAL ? "global" :
                   type == ESP_IP6_ADDR_IS_UNIQUE_LOCAL ? "ULA" : "sonstige");
@@ -308,6 +391,115 @@ static void ip_event_handler(void *arg, esp_event_base_t base, int32_t id, void 
         break;
     }
     update_led();
+}
+
+/* ------------------------------------------------------------------------
+ * WLAN-Treiber: einmal init (auch für den Scan), Station-Konfiguration aus g_settings.wifi
+ * ---------------------------------------------------------------------- */
+static esp_err_t wifi_core_init(bool with_netif)
+{
+    /* Die in main.c eingeschaltete Entropiequelle muss vor dem RF-Start wieder aus; solange der
+     * Treiber läuft, liefert das Wi-Fi-Frontend die Entropie für esp_random() (bootloader_random.h). */
+    bootloader_random_disable();
+    if (with_netif && !s_wifi_netif) {
+        s_wifi_netif = esp_netif_create_default_wifi_sta();
+        ESP_RETURN_ON_FALSE(s_wifi_netif, ESP_FAIL, TAG, "WLAN-netif anlegen");
+    }
+    wifi_init_config_t init = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_RETURN_ON_ERROR(esp_wifi_init(&init), TAG, "wifi init");
+    ESP_RETURN_ON_ERROR(esp_wifi_set_storage(WIFI_STORAGE_RAM), TAG, "wifi storage");   /* Zugangsdaten nur aus g_settings */
+    ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), TAG, "wifi mode");
+    return ESP_OK;
+}
+
+static esp_err_t wifi_station_start(void)
+{
+    ESP_RETURN_ON_ERROR(wifi_core_init(true), TAG, "wifi core");
+
+    wifi_config_t wc = {0};
+    strlcpy((char *)wc.sta.ssid, g_settings.wifi.ssid, sizeof(wc.sta.ssid));
+    strlcpy((char *)wc.sta.password, g_settings.wifi.password, sizeof(wc.sta.password));
+    wc.sta.threshold.authmode = g_settings.wifi.password[0] ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
+    wc.sta.pmf_cfg.capable = true;
+    wc.sta.pmf_cfg.required = false;
+    wc.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
+    wc.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
+    ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_STA, &wc), TAG, "wifi config");
+    ESP_RETURN_ON_ERROR(esp_wifi_set_ps(WIFI_PS_NONE), TAG, "wifi ps");           /* HTTPS-Server soll sofort antworten */
+    esp_wifi_get_mac(WIFI_IF_STA, s_wifi_mac);
+    esp_netif_set_hostname(s_wifi_netif, g_settings.net.hostname);
+
+    const esp_timer_create_args_t targs = { .callback = wifi_retry_cb, .name = "wifi_retry" };
+    ESP_ERROR_CHECK_WITHOUT_ABORT(esp_timer_create(&targs, &s_wifi_retry_timer));
+    ESP_RETURN_ON_ERROR(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_event_handler, NULL), TAG, "wifi evt");
+
+    s_wifi_running = true;
+    ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "wifi start");
+    event_log(EV_NETWORK, "WLAN zusaetzlich aktiv, verbinde mit '%s'", g_settings.wifi.ssid);
+    ESP_LOGI(TAG, "WLAN gestartet, MAC %02x:%02x:%02x:%02x:%02x:%02x", s_wifi_mac[0], s_wifi_mac[1],
+             s_wifi_mac[2], s_wifi_mac[3], s_wifi_mac[4], s_wifi_mac[5]);
+    return ESP_OK;
+}
+
+/* Ergebnis eines Scans einsammeln: je SSID nur der stärkste Eintrag, nach Pegel sortiert */
+static esp_err_t wifi_collect_scan(net_wifi_ap_t *out, int max, int *count)
+{
+    uint16_t n = 0;
+    *count = 0;
+    ESP_RETURN_ON_ERROR(esp_wifi_scan_get_ap_num(&n), TAG, "scan num");
+    if (n == 0) return ESP_OK;
+    if (n > 40) n = 40;
+    wifi_ap_record_t *recs = calloc(n, sizeof(*recs));
+    ESP_RETURN_ON_FALSE(recs, ESP_ERR_NO_MEM, TAG, "scan buffer");
+    esp_err_t err = esp_wifi_scan_get_ap_records(&n, recs);     /* liefert nach RSSI sortiert */
+    if (err != ESP_OK) {
+        free(recs);
+        return err;
+    }
+    for (int i = 0; i < n && *count < max; i++) {
+        const char *ssid = (const char *)recs[i].ssid;
+        if (!ssid[0]) continue;                                 /* versteckte Netze auslassen */
+        bool dup = false;
+        for (int k = 0; k < *count; k++) {
+            if (strcmp(out[k].ssid, ssid) == 0) { dup = true; break; }
+        }
+        if (dup) continue;
+        net_wifi_ap_t *a = &out[(*count)++];
+        strlcpy(a->ssid, ssid, sizeof(a->ssid));
+        a->rssi = recs[i].rssi;
+        a->channel = recs[i].primary;
+        a->open = recs[i].authmode == WIFI_AUTH_OPEN;
+    }
+    free(recs);
+    return ESP_OK;
+}
+
+esp_err_t net_wifi_scan(net_wifi_ap_t *out, int max, int *count)
+{
+    *count = 0;
+    if (!s_wifi_scan_lock) s_wifi_scan_lock = xSemaphoreCreateMutex();
+    if (!s_wifi_scan_lock || xSemaphoreTake(s_wifi_scan_lock, 0) != pdTRUE) return ESP_ERR_INVALID_STATE;
+
+    esp_err_t err = ESP_OK;
+    bool temporary = !s_wifi_running;
+    if (temporary) {
+        /* Treiber nur für den Scan hochfahren; kein netif, keine Verbindung */
+        err = wifi_core_init(false);
+        if (err == ESP_OK) err = esp_wifi_start();
+    }
+    if (err == ESP_OK) {
+        wifi_scan_config_t sc = { .show_hidden = false, .scan_type = WIFI_SCAN_TYPE_ACTIVE };
+        err = esp_wifi_scan_start(&sc, true);                   /* blockiert, typ. 2-4 s */
+        if (err == ESP_OK) err = wifi_collect_scan(out, max, count);
+    }
+    if (temporary) {
+        esp_wifi_stop();
+        esp_wifi_deinit();
+        bootloader_random_enable();                             /* RF ist aus, Entropiequelle wieder an */
+    }
+    ESP_LOGI(TAG, "WLAN-Scan: %d Netze (%s)", *count, esp_err_to_name(err));
+    xSemaphoreGive(s_wifi_scan_lock);
+    return err;
 }
 
 /* ------------------------------------------------------------------------
@@ -336,8 +528,33 @@ esp_err_t net_eth_start(void)
     ESP_RETURN_ON_ERROR(esp_eth_start(s_eth), TAG, "eth start");
     ESP_LOGI(TAG, "Ethernet gestartet, MAC %02x:%02x:%02x:%02x:%02x:%02x, Hostname %s",
              s_mac[0], s_mac[1], s_mac[2], s_mac[3], s_mac[4], s_mac[5], g_settings.net.hostname);
+
+    /* WLAN nur, wenn der Admin es gezielt eingeschaltet und eine SSID hinterlegt hat.
+     * Ein Fehler hier darf Ethernet nicht beeinträchtigen. */
+    if (g_settings.wifi.enabled && g_settings.wifi.ssid[0]) {
+        esp_err_t werr = wifi_station_start();
+        if (werr != ESP_OK) {
+            event_log(EV_NETWORK, "WLAN-Start fehlgeschlagen: %s (Ethernet laeuft weiter)", esp_err_to_name(werr));
+            s_wifi_running = false;
+        }
+    } else if (g_settings.wifi.enabled) {
+        event_log(EV_NETWORK, "WLAN eingeschaltet, aber keine SSID hinterlegt");
+    }
     update_led();
     return ESP_OK;
+}
+
+static int collect_ip6(esp_netif_t *netif, char out[][48])
+{
+    esp_ip6_addr_t ip6[NET_MAX_IP6];
+    int n = esp_netif_get_all_ip6(netif, ip6);
+    if (n > NET_MAX_IP6) {
+        n = NET_MAX_IP6;
+    }
+    for (int i = 0; i < n; i++) {
+        snprintf(out[i], 48, IPV6STR, IPV62STR(ip6[i]));
+    }
+    return n;
 }
 
 void net_eth_get_status(net_status_t *st)
@@ -359,6 +576,27 @@ void net_eth_get_status(net_status_t *st)
             st->full_duplex = (duplex == ETH_DUPLEX_FULL);
         }
     }
+
+    st->wifi_enabled = s_wifi_running;
+    if (s_wifi_running) {
+        st->wifi_connected = s_wifi_connected;
+        st->wifi_has_ip4 = s_wifi_has_ip4;
+        memcpy(st->wifi_mac, s_wifi_mac, 6);
+        strlcpy(st->wifi_ssid, g_settings.wifi.ssid, sizeof(st->wifi_ssid));
+        wifi_ap_record_t ap;
+        if (s_wifi_connected && esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
+            st->wifi_rssi = ap.rssi;
+            st->wifi_channel = ap.primary;
+        }
+        if (s_wifi_netif) {
+            esp_netif_ip_info_t wip;
+            if (esp_netif_get_ip_info(s_wifi_netif, &wip) == ESP_OK) {
+                snprintf(st->wifi_ip4, sizeof(st->wifi_ip4), IPSTR, IP2STR(&wip.ip));
+            }
+            st->wifi_ip6_count = collect_ip6(s_wifi_netif, st->wifi_ip6);
+        }
+    }
+
     if (!s_netif) {
         return;
     }
@@ -375,20 +613,12 @@ void net_eth_get_status(net_status_t *st)
     if (esp_netif_get_dns_info(s_netif, ESP_NETIF_DNS_BACKUP, &dns) == ESP_OK && dns.ip.type == ESP_IPADDR_TYPE_V4) {
         snprintf(st->dns2, sizeof(st->dns2), IPSTR, IP2STR(&dns.ip.u_addr.ip4));
     }
-    esp_ip6_addr_t ip6[NET_MAX_IP6];
-    int n = esp_netif_get_all_ip6(s_netif, ip6);
-    if (n > NET_MAX_IP6) {
-        n = NET_MAX_IP6;
-    }
-    st->ip6_count = n;
-    for (int i = 0; i < n; i++) {
-        snprintf(st->ip6[i], sizeof(st->ip6[i]), IPV6STR, IPV62STR(ip6[i]));
-    }
+    st->ip6_count = collect_ip6(s_netif, st->ip6);
 }
 
 bool net_eth_has_ip(void)
 {
-    return s_has_ip4;
+    return s_has_ip4 || s_wifi_has_ip4;
 }
 
 esp_netif_t *net_eth_get_netif(void)

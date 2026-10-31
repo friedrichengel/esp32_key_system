@@ -104,7 +104,7 @@ esp32_key_system/
 - **IPv6:** Link-Local immer; SLAAC (`CONFIG_LWIP_IPV6_AUTOCONFIG`) ein/aus; zusätzlich **statische IPv6-Adresse** + Präfixlänge + Gateway; DNS via RDNSS oder stateless DHCPv6 (`CONFIG_LWIP_IPV6_DHCP6`). Stateful DHCPv6 bietet lwIP nicht, das wird auf der Admin-Seite so benannt.
 - **Hostname + mDNS** (`<hostname>.local`), damit das Gerät ohne feste IP gefunden wird.
 - **Zeit:** SNTP (2 Server konfigurierbar, IPv6-fähig), Zeitzone als POSIX-TZ-String (Default `CET-1CEST,M3.5.0,M10.5.0/3`). Ein Flag „Zeit gültig“ steuert, ob Zeitcodes akzeptiert werden.
-- Wi-Fi: nicht in Phase 1. Kann als Fallback nachgerüstet werden (Hardware vorhanden).
+- **WLAN (31.10.2026):** zusätzlich zum Kabel, ab Werk aus. Der Admin schaltet es über die per LAN erreichbare Netzwerkseite ein und hinterlegt SSID und Passwort (optional per Scan `/api/network/wifi-scan` auswählen). Kein SoftAP. Ethernet läuft immer weiter; die WLAN-Station nutzt DHCP und SLAAC, die statischen IP-Einstellungen gelten für Ethernet. Settings v6 (`settings_wifi_t` am Ende). RNG: vor dem RF-Start `bootloader_random_disable()`, danach liefert das Wi-Fi-Frontend die Entropie; beim nur temporären Scan wird die Entropiequelle danach wieder eingeschaltet. `CONFIG_ESP_WIFI_ENABLED=y`, Bluetooth bleibt aus.
 
 ---
 
@@ -308,7 +308,7 @@ Grobe Einschätzung: Phase 0–1 sind wegen des neuen Chips das größte Risiko 
 2. **Relais/Türöffner:** Spannung/Strom des Türöffners, vorhandenes Relaismodul (Active-Low?), Fail-safe- oder Fail-secure-Öffner?
 3. ~~Secure Boot per eFuse~~ **Entschieden (23.10.2026): vorerst nicht, eventuell später.** Signierte Updates ohne eFuse (Abschnitt 5).
 4. ~~Zertifikatsquelle~~ **Entschieden (23.10.2026): wie im Vorgängerprojekt** – gerätespezifisch selbstsigniert beim ersten Boot, Upload von Zertifikat + Key über die Admin-Seite (Abschnitt 4).
-5. ~~Wi-Fi als Fallback~~ **Entschieden (24.10.2026): nein**, nur Ethernet.
+5. ~~Wi-Fi als Fallback~~ ~~Entschieden (24.10.2026): nein, nur Ethernet.~~ **Revidiert (31.10.2026): WLAN optional zusätzlich zum Kabel**, ab Werk aus, Einrichtung über LAN, kein SoftAP (Abschnitt 3).
 6. ~~Zusätzliche Auslöser?~~ **Entschieden (24.10.2026): ja, beides kommt rein** – API-Token für Hausautomation und mehrere Türen/Relais, Entwurf in Abschnitt 8a, Phase 8. Ein Keypad pro Gerät, bis zu 4 Türen (entschieden 24.10.2026). **Umgesetzt (Phase 8, `api_tokens.c`, `door_relay.c`, Settings v3), per API gegen das Board getestet.**
 7. ~~Schaltplan des CoreBoards vorhanden?~~ **Erledigt (24.10.2026):** Schaltplan liegt vor (Quellen), Pins geprüft, keine Konflikte.
 8. ~~Soll ich mit Phase 0 starten~~ **Erledigt (24.10.2026), Board läuft.**

@@ -70,31 +70,32 @@ void settings_set_defaults(settings_t *s)
     strlcpy(s->admin.user, "admin", sizeof(s->admin.user));
     s->admin.pw_iterations = 0;
     s->admin.setup_done = false;
+
+    s->wifi.enabled = false;                    /* Kabel ist Standard, WLAN nur gezielt */
 }
 
-/* Jede Version hängt nur am Ende an, der alte Blob ist ein Präfix des neuen:
- * v4 -> v5: door_ext[] (Türtyp/Rolltor-Relais), v3 -> v4: site (Loginseiten-Infos). */
+/* Jede Version hängt nur am Ende an, der alte Blob ist ein Präfix des neuen. Für jede ältere
+ * Version steht hier, wo ihre Nutzdaten enden (= Offset des ersten später angehängten Felds);
+ * sizeof des alten Structs ist dieser Wert auf die Ausrichtung gerundet. */
 #define SETTINGS_ROUND(n) (((n) + _Alignof(settings_t) - 1) / _Alignof(settings_t) * _Alignof(settings_t))
-#define SETTINGS_V4_END  offsetof(settings_t, door_ext)         /* Nutzdaten des v4-Blobs       */
-#define SETTINGS_V4_SIZE SETTINGS_ROUND(SETTINGS_V4_END)        /* sizeof des alten Structs     */
-#define SETTINGS_V3_END  offsetof(settings_t, site)
-#define SETTINGS_V3_SIZE SETTINGS_ROUND(SETTINGS_V3_END)
+static const struct { uint32_t version; size_t end; const char *added; } s_old_layouts[] = {
+    { 3, offsetof(settings_t, site),     "Loginseiten-Infos, Tuertyp, WLAN" },
+    { 4, offsetof(settings_t, door_ext), "Tuertyp, WLAN" },
+    { 5, offsetof(settings_t, wifi),     "WLAN" },
+};
 
 /* Blob mit anderer Version/Größe übernehmen, soweit das Layout es erlaubt; sonst Defaults.
  * s enthält beim Aufruf bereits die Defaults, nur der Präfix wird überschrieben. */
 static bool settings_migrate(settings_t *s, const settings_t *old, uint32_t from_version, size_t old_len)
 {
-    if (from_version == 4 && old_len == SETTINGS_V4_SIZE) {
-        memcpy(s, old, SETTINGS_V4_END);
-        s->version = SETTINGS_VERSION;
-        ESP_LOGW(TAG, "Konfiguration v4 -> v5 migriert (alle Tueren als Tueroeffner)");
-        return true;
-    }
-    if (from_version == 3 && old_len == SETTINGS_V3_SIZE) {
-        memcpy(s, old, SETTINGS_V3_END);
-        s->version = SETTINGS_VERSION;
-        ESP_LOGW(TAG, "Konfiguration v3 -> v5 migriert (Loginseiten-Infos leer, Tueren als Tueroeffner)");
-        return true;
+    for (size_t i = 0; i < sizeof(s_old_layouts) / sizeof(s_old_layouts[0]); i++) {
+        if (s_old_layouts[i].version == from_version && SETTINGS_ROUND(s_old_layouts[i].end) == old_len) {
+            memcpy(s, old, s_old_layouts[i].end);
+            s->version = SETTINGS_VERSION;
+            ESP_LOGW(TAG, "Konfiguration v%" PRIu32 " -> v%d migriert (neu mit Defaults: %s)", from_version,
+                     SETTINGS_VERSION, s_old_layouts[i].added);
+            return true;
+        }
     }
     ESP_LOGW(TAG, "Konfiguration v%" PRIu32 " (%u Byte) nicht migrierbar, Defaults", from_version, (unsigned)old_len);
     return false;

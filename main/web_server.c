@@ -291,6 +291,37 @@ static cJSON *net_to_json(const settings_network_t *n)
     return o;
 }
 
+/* WLAN-Einstellungen; das Passwort verlässt das Gerät nur im Backup (with_password) */
+static void wifi_to_json(cJSON *o, const settings_wifi_t *w, bool with_password)
+{
+    cJSON_AddBoolToObject(o, "wifi_enabled", w->enabled);
+    cJSON_AddStringToObject(o, "wifi_ssid", w->ssid);
+    cJSON_AddBoolToObject(o, "wifi_password_set", w->password[0] != 0);
+    if (with_password) cJSON_AddStringToObject(o, "wifi_password", w->password);
+}
+
+/* wifi_password: fehlt oder leer = unverändert; wifi_password_clear: true = offenes Netz.
+ * Fehlertext oder NULL. */
+static const char *wifi_from_json(const cJSON *j, settings_wifi_t *w)
+{
+    w->enabled = jbool(j, "wifi_enabled", w->enabled);
+    const char *ssid = jstr(j, "wifi_ssid", NULL);
+    if (ssid) {
+        if (strlen(ssid) >= SETTINGS_WIFI_SSID_LEN) return "WLAN-Name (SSID) zu lang (max. 32 Zeichen)";
+        copy_str(w->ssid, sizeof(w->ssid), ssid);
+    }
+    const char *pw = jstr(j, "wifi_password", NULL);
+    if (pw && pw[0]) {
+        size_t n = strlen(pw);
+        if (n < 8 || n > 63) return "WLAN-Passwort muss 8 bis 63 Zeichen haben";
+        copy_str(w->password, sizeof(w->password), pw);
+    } else if (jbool(j, "wifi_password_clear", false)) {
+        w->password[0] = 0;
+    }
+    if (w->enabled && !w->ssid[0]) return "WLAN aktivieren geht nur mit WLAN-Name (SSID)";
+    return NULL;
+}
+
 static bool valid_hostname(const char *h)
 {
     size_t n = strlen(h);
@@ -1009,6 +1040,22 @@ static esp_err_t h_status_get(httpd_req_t *req)
     cJSON_AddStringToObject(net, "ip4", ns.ip4);
     cJSON_AddStringToObject(net, "mask4", ns.mask4);
     cJSON_AddStringToObject(net, "gw4", ns.gw4);
+    cJSON_AddBoolToObject(net, "wifi_enabled", ns.wifi_enabled);
+    if (ns.wifi_enabled) {
+        cJSON *w = cJSON_AddObjectToObject(net, "wifi");
+        char wmac[18];
+        snprintf(wmac, sizeof(wmac), "%02x:%02x:%02x:%02x:%02x:%02x",
+                 ns.wifi_mac[0], ns.wifi_mac[1], ns.wifi_mac[2], ns.wifi_mac[3], ns.wifi_mac[4], ns.wifi_mac[5]);
+        cJSON_AddStringToObject(w, "ssid", ns.wifi_ssid);
+        cJSON_AddBoolToObject(w, "connected", ns.wifi_connected);
+        cJSON_AddNumberToObject(w, "rssi", ns.wifi_rssi);
+        cJSON_AddNumberToObject(w, "channel", ns.wifi_channel);
+        cJSON_AddStringToObject(w, "mac", wmac);
+        cJSON_AddBoolToObject(w, "has_ip4", ns.wifi_has_ip4);
+        cJSON_AddStringToObject(w, "ip4", ns.wifi_ip4);
+        cJSON *w6 = cJSON_AddArrayToObject(w, "ip6");
+        for (int i = 0; i < ns.wifi_ip6_count; i++) cJSON_AddItemToArray(w6, cJSON_CreateString(ns.wifi_ip6[i]));
+    }
     cJSON_AddStringToObject(net, "dns1", ns.dns1);
     cJSON_AddStringToObject(net, "dns2", ns.dns2);
     cJSON *ip6 = cJSON_AddArrayToObject(net, "ip6");
@@ -1033,7 +1080,9 @@ static esp_err_t h_network_get(httpd_req_t *req)
 {
     req_auth_t a;
     if (!require_admin(req, &a)) return ESP_OK;
-    return send_json(req, net_to_json(&g_settings.net));
+    cJSON *o = net_to_json(&g_settings.net);
+    wifi_to_json(o, &g_settings.wifi, false);
+    return send_json(req, o);
 }
 
 static esp_err_t h_network_post(httpd_req_t *req)
@@ -1043,16 +1092,55 @@ static esp_err_t h_network_post(httpd_req_t *req)
     cJSON *j = read_json(req);
     if (!j) return send_error(req, "400 Bad Request", "JSON erwartet");
     settings_network_t n = g_settings.net;
+    settings_wifi_t w = g_settings.wifi;
     const char *err = net_from_json(j, &n);
+    if (!err) err = wifi_from_json(j, &w);
     cJSON_Delete(j);
     if (err) return send_error(req, "400 Bad Request", err);
 
+    bool wifi_changed = w.enabled != g_settings.wifi.enabled || strcmp(w.ssid, g_settings.wifi.ssid) != 0 ||
+                        strcmp(w.password, g_settings.wifi.password) != 0;
     g_settings.net = n;
+    g_settings.wifi = w;
     if (settings_save() != ESP_OK) return send_error(req, "500 Internal Server Error", "Speichern fehlgeschlagen");
-    event_log(EV_CONFIG, "Netzwerkeinstellungen geaendert (ipv4=%s, host=%s)",
-              n.ipv4_mode == IPV4_MODE_STATIC ? n.ipv4_addr : "dhcp", n.hostname);
+    event_log(EV_CONFIG, "Netzwerkeinstellungen geaendert von %s (ipv4=%s, host=%s, WLAN %s%s%s)", a.p.name,
+              n.ipv4_mode == IPV4_MODE_STATIC ? n.ipv4_addr : "dhcp", n.hostname,
+              w.enabled ? "an: '" : "aus", w.enabled ? w.ssid : "", w.enabled ? "'" : "");
+    if (wifi_changed) {
+        event_log(EV_CONFIG, "WLAN-Zugangsdaten geaendert von %s (aktiv nach Neustart)", a.p.name);
+    }
     time_sync_restart();
     return send_ok_reboot(req);
+}
+
+/* Admin: WLAN-Umgebung scannen, blockiert einige Sekunden -> {networks:[{ssid, rssi, channel, open}]} */
+static esp_err_t h_wifi_scan(httpd_req_t *req)
+{
+    req_auth_t a;
+    if (!require_admin(req, &a)) return ESP_OK;
+    net_wifi_ap_t *aps = calloc(CFG_WIFI_SCAN_MAX, sizeof(*aps));
+    if (!aps) return send_error(req, "500 Internal Server Error", "Kein Speicher");
+    int count = 0;
+    esp_err_t err = net_wifi_scan(aps, CFG_WIFI_SCAN_MAX, &count);
+    if (err == ESP_ERR_INVALID_STATE) { free(aps); return send_error(req, "409 Conflict", "Es laeuft bereits eine WLAN-Suche"); }
+    if (err != ESP_OK) {
+        free(aps);
+        event_log(EV_NETWORK, "WLAN-Suche fehlgeschlagen: %s", esp_err_to_name(err));
+        return send_error(req, "500 Internal Server Error", "WLAN-Suche fehlgeschlagen");
+    }
+    cJSON *o = cJSON_CreateObject();
+    cJSON *arr = cJSON_AddArrayToObject(o, "networks");
+    for (int i = 0; i < count; i++) {
+        cJSON *n = cJSON_CreateObject();
+        cJSON_AddStringToObject(n, "ssid", aps[i].ssid);
+        cJSON_AddNumberToObject(n, "rssi", aps[i].rssi);
+        cJSON_AddNumberToObject(n, "channel", aps[i].channel);
+        cJSON_AddBoolToObject(n, "open", aps[i].open);
+        cJSON_AddItemToArray(arr, n);
+    }
+    free(aps);
+    event_log(EV_NETWORK, "WLAN-Suche von %s: %d Netze", a.p.name, count);
+    return send_json(req, o);
 }
 
 /* ========================================================================
@@ -1742,6 +1830,8 @@ static esp_err_t h_backup_get(httpd_req_t *req)
     cJSON_AddNumberToObject(o, "created", (double)(time_sync_is_valid() ? time(NULL) : 0));
     cJSON *st = cJSON_AddObjectToObject(o, "settings");
     cJSON_AddItemToObject(st, "net", net_to_json(&g_settings.net));
+    cJSON *wifi = cJSON_AddObjectToObject(st, "wifi");
+    wifi_to_json(wifi, &g_settings.wifi, true);               /* mit Passwort, sonst ist das Geraet nach Restore ohne WLAN */
     cJSON_AddItemToObject(st, "doors", doors_to_json());
     cJSON_AddItemToObject(st, "keypad", keypad_to_json(&g_settings.keypad));
     cJSON_AddItemToObject(st, "site", site_to_json(&g_settings.site));
@@ -1770,6 +1860,11 @@ static esp_err_t h_restore_post(httpd_req_t *req)
         cJSON *net = cJSON_GetObjectItemCaseSensitive(st, "net");
         if (with_net && cJSON_IsObject(net)) {
             const char *err = net_from_json(net, &ns.net);
+            if (err) { cJSON_Delete(j); return send_error(req, "400 Bad Request", err); }
+        }
+        cJSON *wifi = cJSON_GetObjectItemCaseSensitive(st, "wifi");
+        if (with_net && cJSON_IsObject(wifi)) {
+            const char *err = wifi_from_json(wifi, &ns.wifi);
             if (err) { cJSON_Delete(j); return send_error(req, "400 Bad Request", err); }
         }
         cJSON *d = cJSON_GetObjectItemCaseSensitive(st, "doors");
@@ -2213,6 +2308,7 @@ static const httpd_uri_t s_routes[] = {
     ROUTE("/api/status",               HTTP_GET,    h_status_get),
     ROUTE("/api/network",              HTTP_GET,    h_network_get),
     ROUTE("/api/network",              HTTP_POST,   h_network_post),
+    ROUTE("/api/network/wifi-scan",    HTTP_GET,    h_wifi_scan),
     ROUTE("/api/cert",                 HTTP_GET,    h_cert_get),
     ROUTE("/api/cert/download",        HTTP_GET,    h_cert_download),
     ROUTE("/api/cert/upload",          HTTP_POST,   h_cert_upload),

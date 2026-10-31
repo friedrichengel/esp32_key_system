@@ -355,6 +355,21 @@
           <label>Präfixlänge <input name="ipv6_prefix_len" type="number" min="1" max="128" value="64"></label>
         </div>
       </fieldset>
+      <fieldset><legend>WLAN (zusätzlich zum Kabel)</legend>
+        <p class="hint">Ab Werk aus. Ethernet bleibt immer aktiv; WLAN kommt als zweite Schnittstelle dazu (nur als Teilnehmer in deinem Netz, kein eigener Access Point) und bezieht seine Adressen per DHCP und SLAAC. Die IPv4-/IPv6-Einstellungen oben gelten für das Kabel. Hier einrichten, solange das Gerät per Kabel erreichbar ist.</p>
+        <label><input type="checkbox" name="wifi_enabled"> WLAN aktivieren</label>
+        <div id="wifi-fields">
+          <div class="field-row">
+            <label>WLAN-Name (SSID) <input name="wifi_ssid" maxlength="32" autocomplete="off" list="wifi-ssids"></label>
+            <datalist id="wifi-ssids"></datalist>
+            <button type="button" class="secondary" id="wifi-scan">Netze suchen</button>
+          </div>
+          <div class="row"><select id="wifi-found" class="hidden"></select></div>
+          <label>Passwort <input name="wifi_password" type="password" minlength="8" maxlength="63" autocomplete="new-password" placeholder="8 bis 63 Zeichen"></label>
+          <label><input type="checkbox" name="wifi_password_clear"> Passwort löschen (offenes Netz)</label>
+          <p class="hint" id="wifi-pw-hint"></p>
+        </div>
+      </fieldset>
       <fieldset><legend>Zeit</legend>
         <label>NTP-Server 1 <input name="ntp1"></label>
         <label>NTP-Server 2 <input name="ntp2"></label>
@@ -416,7 +431,7 @@
   <section id="view-system" class="view hidden">
     <div class="card">
       <h2>Türen und Relais</h2>
-      <p class="hint">Jede Tür ist ein <strong>Türöffner</strong> (ein Relais, der Impuls öffnet) oder ein <strong>Rolltor</strong> (zwei Relais aus dem Pool der vier Relais-Ausgänge, eines für Auf und eines für Ab, je Fahrbefehl ein Impuls). Ein Relais darf nur einer aktiven Tür gehören; nutzt ein Rolltor das Relais einer anderen Tür, muss diese deaktiviert sein. Türkontakt und Austaster sind optional (Pins stehen in der Überschrift). Deaktivierte Türen lassen ihre Pins unberührt.</p>
+      <p class="hint">Jede Tür ist ein <strong>Türöffner</strong> (ein Relais, der Impuls öffnet) oder ein <strong>Rolltor</strong> (zwei Relais aus dem Pool der vier Relais-Ausgänge, eines für Auf und eines für Ab, je Fahrbefehl ein Impuls). Ein Relais darf nur einer aktiven Tür gehören; nutzt ein Rolltor das Relais einer anderen Tür, muss diese deaktiviert sein. Türkontakt und Austaster sind optional (Pins stehen in der Überschrift); der Austaster öffnet bzw. fährt das Rolltor auf. Deaktivierte Türen lassen ihre Pins unberührt.</p>
       <form id="form-doors">
         <div id="doors-forms"></div>
         <button type="submit">Speichern</button>

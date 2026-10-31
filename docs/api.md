@@ -46,7 +46,7 @@ Benutzer-Felder in Session- und Login-Antwort: `uid`, `role` (`admin`|`user`), `
 
 | Methode | Pfad | Beschreibung |
 |---|---|---|
-| GET | `/api/status` | `admin` (bool), `firmware`, `system` (Uptime, Zeit, TLS; Admin zusätzlich Heap, FS), `keypad` (`door`, `locked`, `lock_remaining_s`; Admin zusätzlich `fail_count`, `rx_count`, `last_rx_uptime_s`, `learn_mode`), `doors[]` (`door`, `name`, `enabled`, `kind`, `relay_active`, `direction` (`up`/`down`/leer, nur während ein Relais angezogen ist), `last_direction`, `contact_enabled`, `contact_closed`, `last_open_uptime_s` (letzter Befehl, bei Rolltor auf oder ab)), `codes_count` (Benutzer: eigene). Nur Admin: `network`, `tokens_count`, `users_count` |
+| GET | `/api/status` | `admin` (bool), `firmware`, `system` (Uptime, Zeit, TLS; Admin zusätzlich Heap, FS), `keypad` (`door`, `locked`, `lock_remaining_s`; Admin zusätzlich `fail_count`, `rx_count`, `last_rx_uptime_s`, `learn_mode`), `doors[]` (`door`, `name`, `enabled`, `kind`, `relay_active`, `direction` (`up`/`down`/leer, nur während ein Relais angezogen ist), `last_direction`, `contact_enabled`, `contact_closed`, `last_open_uptime_s` (letzter Befehl, bei Rolltor auf oder ab)), `codes_count` (Benutzer: eigene). Nur Admin: `network` (Ethernet-Felder sowie `wifi_enabled` und bei aktivem WLAN `wifi:{ssid, connected, rssi, channel, mac, has_ip4, ip4, ip6[]}`), `tokens_count`, `users_count` |
 | GET | `/api/log?max=N&after=ID` | **Admin.** Ereignisse neueste zuerst, `{last_id, entries:[{id, ts, uptime, cat, msg}]}` |
 
 ## Codes
@@ -120,7 +120,8 @@ curl -k -X POST https://keysystem.local/api/v1/doors/1/open \
 
 | Methode | Pfad | Beschreibung |
 |---|---|---|
-| GET/POST | `/api/network` | Hostname, IPv4 (dhcp/static), DNS, IPv6 (SLAAC, statisch), NTP, TZ → `reboot_required` |
+| GET/POST | `/api/network` | Hostname, IPv4 (dhcp/static), DNS, IPv6 (SLAAC, statisch), NTP, TZ sowie WLAN: `wifi_enabled` (Default false), `wifi_ssid`, `wifi_password_set` (nur GET); POST nimmt `wifi_password` (leer/fehlend = unverändert, sonst 8–63 Zeichen) und `wifi_password_clear` (offenes Netz). Ethernet läuft immer, WLAN kommt als zweite Schnittstelle mit DHCP/SLAAC dazu; die IP-Einstellungen gelten für Ethernet → `reboot_required` |
+| GET | `/api/network/wifi-scan` | WLAN-Umgebung scannen (blockiert einige Sekunden; läuft WLAN nicht, wird der Treiber nur dafür gestartet) → `{networks:[{ssid, rssi, channel, open}]}`, stärkstes Signal zuerst, je SSID ein Eintrag; 409 wenn schon eine Suche läuft |
 | GET/POST | `/api/system` | `{doors:[{door, enabled, name, kind ("opener"\|"gate"), relay_up, relay_down (Relaisnummern 1..4, nur bei gate genutzt), relay_pulse_ms, relay_active_low, door_contact_enable, exit_button_enable, pins:{relay, relay_up, relay_down, contact, rex}}], max_doors, relays:[{relay, gpio}], keypad:{baud, parity, frame_mode, terminator, clear_key, fixed_len, timeout_ms, learn_mode, door}, site:{name, support_email, info_text}, admin_user, pins}`; POST nimmt `doors` (Array, Teilmenge erlaubt; 400 wenn ein Relais zwei aktiven Türen gehört oder ein Rolltor dasselbe Relais für Auf und Ab hat), `keypad` und/oder `site`. `terminator`/`clear_key`: ein Zeichen, `CR`, `LF`, `BS`, `none` oder Hex wie `0x08`. `site`: Name max. 31, E-Mail max. 63 (einfache Formatprüfung), Text max. 511 Zeichen |
 | POST | `/api/system/password` | nur Admin-Hauptkonto: `{user, old_password, new_password}` – Name und/oder Passwort; Name darf keinem Benutzer gehören (409) |
 | POST | `/api/system/reboot` | Neustart nach 1,5 s |
@@ -134,7 +135,7 @@ curl -k -X POST https://keysystem.local/api/v1/doors/1/open \
 
 | Methode | Pfad | Beschreibung |
 |---|---|---|
-| GET | `/api/backup` | `{format:"esp32_key_system_backup", version: 3, settings:{net, doors[], keypad, site}, users:[...], codes:[...]}` – `users` **mit Passwort-Hash, Salt und 2FA-Daten**, ohne Admin-Passwort, Token, Zertifikat, Key. Die Datei enthält Zutrittscodes im Klartext. Backups der Versionen 1 und 2 werden weiter eingespielt (Codes gehören dann dem Admin) |
+| GET | `/api/backup` | `{format:"esp32_key_system_backup", version: 3, settings:{net, wifi, doors[], keypad, site}, users:[...], codes:[...]}` – `users` **mit Passwort-Hash, Salt und 2FA-Daten**, `wifi` **mit WLAN-Passwort im Klartext** (wird mit `restore_network` eingespielt), ohne Admin-Passwort, Token, Zertifikat, Key. Die Datei enthält Zutrittscodes im Klartext. Backups der Versionen 1 und 2 werden weiter eingespielt (Codes gehören dann dem Admin) |
 | POST | `/api/restore` | Backup-JSON (max. 96 KB), optional `restore_network:false`; Codes und, falls enthalten, Benutzer werden ersetzt (deren Sessions enden) |
 | GET | `/api/firmware` | laufende/nächste Partition, Versionen, `pending_verify`, `rollback_possible` |
 | POST | `/api/firmware` | Body = signiertes `firmware.bin` (application/octet-stream); Signaturprüfung nach Upload |

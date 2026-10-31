@@ -52,6 +52,8 @@
 #define CFG_DOOR_CONTACT_GPIOS    { GPIO_NUM_42, GPIO_NUM_44, GPIO_NUM_47, GPIO_NUM_36 }  /* J2-20, 18, 13, 24 */
 #define CFG_DOOR_REX_GPIOS        { GPIO_NUM_39, GPIO_NUM_45, GPIO_NUM_48, GPIO_NUM_35 }  /* J2-21, 15, 14, 25 */
 #define CFG_RELAY_ACTIVE_LOW      0             /* Compile-Zeit-Default, bis NVS gelesen ist */
+#define CFG_WIFI_RETRY_S          5             /* WLAN: Pause zwischen Verbindungsversuchen  */
+#define CFG_WIFI_SCAN_MAX         20            /* WLAN-Suche: max. gelieferte Netze          */
 #define CFG_RELAY_PULSE_MS_DEFAULT 3000
 #define CFG_RELAY_PULSE_MS_MIN    500
 #define CFG_RELAY_PULSE_MS_MAX    30000         /* harte Obergrenze in der Firmware         */

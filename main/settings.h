@@ -12,7 +12,7 @@
 #include "esp_err.h"
 #include "config.h"
 
-#define SETTINGS_VERSION        5               /* v5: door_ext[] (Rolltor), v4: site, v3: doors[], keypad.door */
+#define SETTINGS_VERSION        6               /* v6: wifi, v5: door_ext[] (Rolltor), v4: site, v3: doors[], keypad.door */
 #define SETTINGS_TOTP_SECRET_LEN 20
 #define SETTINGS_RECOVERY_COUNT 8
 #define SETTINGS_STR_SHORT      32
@@ -24,6 +24,8 @@
 #define SETTINGS_PW_SALT_LEN    16
 #define SETTINGS_STR_EMAIL      64
 #define SETTINGS_STR_INFO       512
+#define SETTINGS_WIFI_SSID_LEN  33              /* 32 Byte + NUL                          */
+#define SETTINGS_WIFI_PASS_LEN  65              /* WPA2-PSK: 8..63 Zeichen + NUL           */
 
 typedef enum {
     IPV4_MODE_DHCP = 0,
@@ -120,6 +122,15 @@ typedef struct {
     char     info_text[SETTINGS_STR_INFO];            /* mehrzeiliger Text, z. B. Adresse        */
 } settings_site_t;
 
+/* WLAN statt Kabel (ab v6). Ab Werk AUS: Das Gerät nutzt Ethernet, bis der Admin WLAN gezielt
+ * einschaltet. Ist WLAN aktiv, wird der Ethernet-Treiber nicht gestartet; IP-, Hostname- und
+ * NTP-Einstellungen aus settings_network_t gelten dann für die WLAN-Schnittstelle. */
+typedef struct {
+    bool     enabled;
+    char     ssid[SETTINGS_WIFI_SSID_LEN];
+    char     password[SETTINGS_WIFI_PASS_LEN];        /* leer = offenes Netz                     */
+} settings_wifi_t;
+
 /* Neue Felder nur am Ende anhängen: settings_init() übernimmt ältere Blobs als Präfix. */
 typedef struct {
     uint32_t           version;
@@ -130,6 +141,7 @@ typedef struct {
     settings_twofa_t   twofa;                         /* 2FA des Admins; Benutzer: users.json   */
     settings_site_t    site;                          /* ab v4                                   */
     settings_door_ext_t door_ext[CFG_MAX_DOORS];      /* ab v5: Türtyp, Rolltor-Relais           */
+    settings_wifi_t    wifi;                          /* ab v6: WLAN statt Ethernet, Default aus */
 } settings_t;
 
 /* Globale Instanz; nach settings_init() gültig. Schreibzugriff nur über settings_save(). */
