@@ -171,7 +171,7 @@
         ? 'vor ' + fmtUptime(s.system.uptime_s - d.last_open_uptime_s) + (gate ? ` (${dirText(d.last_direction)})` : '')
         : 'seit Start keine';
       const buttons = !canOpen(d.door) ? ''
-        : gate ? `<div class="row2"><button data-act="open">&#9650; Auf</button><button data-act="close">&#9660; Ab</button></div>`
+        : gate ? `<div class="row3"><button data-act="open" class="up">&#9650; Auf</button><button data-act="stop" class="stop">&#9632; Stopp</button><button data-act="close" class="down">&#9660; Ab</button></div>`
         : `<button data-act="open">${esc(d.name)} öffnen</button>`;
       return `
       <div class="door ${d.relay_active ? 'open' : ''}" data-door="${d.door}">
@@ -233,11 +233,11 @@
     const btn = ev.target.closest('button[data-act]');
     if (!btn) return;
     const n = Number(btn.closest('.door').dataset.door);
-    const act = btn.dataset.act === 'close' ? 'close' : 'open';
+    const act = ['open', 'close', 'stop'].includes(btn.dataset.act) ? btn.dataset.act : 'open';
     btn.disabled = true;
     try {
       const r = await api('/api/door/' + act, { method: 'POST', json: { door: n } });
-      toast(r.kind === 'gate' ? `${r.name} fährt ${r.direction === 'down' ? 'ab' : 'auf'}` : `${r.name} geöffnet`, 'ok');
+      toast(r.action === 'stop' ? `${r.name}: Stopp` : r.kind === 'gate' ? `${r.name} fährt ${r.direction === 'down' ? 'ab' : 'auf'}` : `${r.name} geöffnet`, 'ok');
       loadDashboard().catch(() => {});
     }
     catch (e) { toast(e.message, 'bad'); }
@@ -572,8 +572,9 @@ curl -k -X POST https://${host}/api/v1/doors/1/open \\
      -H "Authorization: Bearer ks1.xxxxxxxx.yyyyyyyy…" \\
      -H "Content-Type: application/json" -d '{"pulse_ms": 3000}'
 
-# Rolltor 1 ab (nur bei Türtyp Rolltor)
+# Rolltor 1 ab bzw. Stopp (nur bei Türtyp Rolltor)
 curl -k -X POST https://${host}/api/v1/doors/1/close -H "Authorization: Bearer ks1.…"
+curl -k -X POST https://${host}/api/v1/doors/1/stop -H "Authorization: Bearer ks1.…"
 
 # Status (Türen, Kontakt, Relais, Link)
 curl -k https://${host}/api/v1/status -H "Authorization: Bearer ks1.…"

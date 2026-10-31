@@ -1427,12 +1427,25 @@ static esp_err_t door_action_error(httpd_req_t *req, esp_err_t err, bool *sent)
     *sent = true;
     if (err == ESP_OK) { *sent = false; return ESP_OK; }
     if (err == ESP_ERR_INVALID_ARG) return send_error(req, "404 Not Found", "Tuer nicht vorhanden");
-    if (err == ESP_ERR_NOT_SUPPORTED) return send_error(req, "409 Conflict", "Nur ein Rolltor kennt die Richtung Ab");
+    if (err == ESP_ERR_NOT_SUPPORTED) return send_error(req, "409 Conflict", "Ab und Stopp gibt es nur bei einem Rolltor");
     if (err == ESP_ERR_INVALID_STATE) return send_error(req, "409 Conflict", "Tuer ist deaktiviert oder ihr Relais ist nicht verfuegbar");
     return send_error(req, "500 Internal Server Error", "Relais konnte nicht geschaltet werden");
 }
 
-/* Web-UI: Tür öffnen (Rolltor: auf) bzw. Rolltor ab, Body optional {door: n} */
+/* dir: DOOR_DIR_UP = öffnen/auf, DOOR_DIR_DOWN = ab, DOOR_DIR_NONE = Stopp (nur Rolltor) */
+static esp_err_t door_do(int idx, door_dir_t dir, const char *reason, uint32_t pulse)
+{
+    if (dir == DOOR_DIR_DOWN) return door_close(idx, reason, pulse);
+    if (dir == DOOR_DIR_NONE) return door_stop(idx, reason);
+    return door_open(idx, reason, pulse);
+}
+
+static const char *door_action_name(door_dir_t dir)
+{
+    return dir == DOOR_DIR_UP ? "up" : dir == DOOR_DIR_DOWN ? "down" : "stop";
+}
+
+/* Web-UI: Tür öffnen (Rolltor: auf), Rolltor ab oder Stopp, Body optional {door: n} */
 static esp_err_t h_door_action(httpd_req_t *req, door_dir_t dir)
 {
     req_auth_t a;
@@ -1453,7 +1466,7 @@ static esp_err_t h_door_action(httpd_req_t *req, door_dir_t dir)
     }
     char reason[48];
     snprintf(reason, sizeof(reason), "Web-UI %s", a.p.name);
-    esp_err_t err = dir == DOOR_DIR_DOWN ? door_close(idx, reason, 0) : door_open(idx, reason, 0);
+    esp_err_t err = door_do(idx, dir, reason, 0);
     bool sent;
     esp_err_t r = door_action_error(req, err, &sent);
     if (sent) return r;
@@ -1462,12 +1475,14 @@ static esp_err_t h_door_action(httpd_req_t *req, door_dir_t dir)
     cJSON_AddNumberToObject(o, "door", idx + 1);
     cJSON_AddStringToObject(o, "name", door_name(idx));
     cJSON_AddStringToObject(o, "kind", door_kind_name(g_settings.door_ext[idx].kind));
+    cJSON_AddStringToObject(o, "action", door_action_name(dir));
     cJSON_AddStringToObject(o, "direction", door_dir_name(dir));
     return send_json(req, o);
 }
 
 static esp_err_t h_door_open(httpd_req_t *req)  { return h_door_action(req, DOOR_DIR_UP); }
 static esp_err_t h_door_close(httpd_req_t *req) { return h_door_action(req, DOOR_DIR_DOWN); }
+static esp_err_t h_door_stop(httpd_req_t *req)  { return h_door_action(req, DOOR_DIR_NONE); }
 
 static esp_err_t h_keypad_raw(httpd_req_t *req)
 {
@@ -2183,8 +2198,8 @@ static esp_err_t h_v1_doors(httpd_req_t *req)
     return send_json(req, o);
 }
 
-/* Nummer aus /api/v1/doors/<n>/open|close: 1..CFG_MAX_DOORS, 0 = keine Tuer, -1 = andere Aktion.
- * dir: DOOR_DIR_UP für /open, DOOR_DIR_DOWN für /close */
+/* Nummer aus /api/v1/doors/<n>/open|close|stop: 1..CFG_MAX_DOORS, 0 = keine Tuer, -1 = andere Aktion.
+ * dir: DOOR_DIR_UP für /open, DOOR_DIR_DOWN für /close, DOOR_DIR_NONE für /stop */
 static int uri_door_number(const httpd_req_t *req, door_dir_t *dir)
 {
     const char *p = strstr(req->uri, "/doors/");
@@ -2194,7 +2209,7 @@ static int uri_door_number(const httpd_req_t *req, door_dir_t *dir)
     long n = strtol(p, &end, 10);
     if (end == p || n < 1 || n > CFG_MAX_DOORS) return 0;
     static const struct { const char *name; size_t len; door_dir_t dir; } acts[] = {
-        { "/open", 5, DOOR_DIR_UP }, { "/close", 6, DOOR_DIR_DOWN },
+        { "/open", 5, DOOR_DIR_UP }, { "/close", 6, DOOR_DIR_DOWN }, { "/stop", 5, DOOR_DIR_NONE },
     };
     for (size_t i = 0; i < sizeof(acts) / sizeof(acts[0]); i++) {
         if (strncmp(end, acts[i].name, acts[i].len) == 0 && (!end[acts[i].len] || end[acts[i].len] == '?')) {
@@ -2212,7 +2227,7 @@ static esp_err_t h_v1_door_open(httpd_req_t *req)
     if (!require_bearer(req, true, &t, ip, sizeof(ip))) return ESP_OK;
     door_dir_t dir = DOOR_DIR_UP;
     int n = uri_door_number(req, &dir);
-    if (n < 0) return send_error(req, "404 Not Found", "Unbekannte Aktion, erwartet /api/v1/doors/<n>/open oder /close");
+    if (n < 0) return send_error(req, "404 Not Found", "Unbekannte Aktion, erwartet /api/v1/doors/<n>/open, /close oder /stop");
     if (n == 0) return send_error(req, "404 Not Found", "Tuer nicht vorhanden");
     if (!t.can_open || !(t.doors & (1u << (n - 1)))) {
         event_log(EV_DENIED, "API: Token '%s' darf Tuer %d nicht bedienen (%s)", t.name, n, ip);
@@ -2229,7 +2244,7 @@ static esp_err_t h_v1_door_open(httpd_req_t *req)
     }
     char reason[96];
     snprintf(reason, sizeof(reason), "API '%s' von %s", t.name, ip);
-    esp_err_t err = dir == DOOR_DIR_DOWN ? door_close(n - 1, reason, pulse) : door_open(n - 1, reason, pulse);
+    esp_err_t err = door_do(n - 1, dir, reason, pulse);
     bool sent;
     esp_err_t r = door_action_error(req, err, &sent);
     if (sent) return r;
@@ -2238,6 +2253,7 @@ static esp_err_t h_v1_door_open(httpd_req_t *req)
     cJSON_AddNumberToObject(o, "door", n);
     cJSON_AddStringToObject(o, "name", door_name(n - 1));
     cJSON_AddStringToObject(o, "kind", door_kind_name(g_settings.door_ext[n - 1].kind));
+    cJSON_AddStringToObject(o, "action", door_action_name(dir));
     cJSON_AddStringToObject(o, "direction", door_dir_name(dir));
     return send_json(req, o);
 }
@@ -2320,6 +2336,7 @@ static const httpd_uri_t s_routes[] = {
     ROUTE("/api/codes/*",              HTTP_DELETE, h_codes_delete),
     ROUTE("/api/door/open",            HTTP_POST,   h_door_open),
     ROUTE("/api/door/close",           HTTP_POST,   h_door_close),
+    ROUTE("/api/door/stop",            HTTP_POST,   h_door_stop),
     ROUTE("/api/keypad/raw",           HTTP_GET,    h_keypad_raw),
     ROUTE("/api/system",               HTTP_GET,    h_system_get),
     ROUTE("/api/system",               HTTP_POST,   h_system_post),

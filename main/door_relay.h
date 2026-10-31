@@ -35,6 +35,9 @@ esp_err_t door_init(void);
 esp_err_t door_open(int idx, const char *reason, uint32_t pulse_ms);
 /* Rolltor: Relais "Ab" anziehen; ESP_ERR_NOT_SUPPORTED bei einem Türöffner. */
 esp_err_t door_close(int idx, const char *reason, uint32_t pulse_ms);
+/* Rolltor: laufenden Impuls sofort beenden, beide Relais (Auf und Ab) fallen ab. Ohne laufenden
+ * Impuls ESP_OK. ESP_ERR_NOT_SUPPORTED bei einem Türöffner. */
+esp_err_t door_stop(int idx, const char *reason);
 bool      door_is_enabled(int idx);
 bool      door_is_gate(int idx);
 bool      door_relay_active(int idx);             /* irgendein Relais dieser Tür angezogen */

@@ -60,7 +60,7 @@ main/
 │                       Freigabemaske shared (Bit uid), Einmalcode-Nutzungsfenster grace_s (Laufzeituhr, nur RAM)
 ├── keypad_rs232.[ch]   UART1-Task, Rahmen-Parser (Terminator/feste Länge/Timeout), Rohdaten für Lernmodus
 ├── door_relay.[ch]     bis zu CFG_MAX_DOORS Türen: Relais-Impuls per esp_timer, Türkontakt/REX entprellt; Typ Türöffner
-│                       (eigenes Relais) oder Rolltor (zwei Relais aus dem Pool, Auf/Ab verriegelt, door_close());
+│                       (eigenes Relais) oder Rolltor (zwei Relais aus dem Pool, Auf/Ab verriegelt, door_close(), door_stop());
 │                       door_settings_check() verbietet Doppelbelegung eines Relais durch aktive Türen
 ├── api_tokens.[ch]     Bearer-Token für Drittsysteme: SHA-256-Hash in /storage/tokens.json, Türmaske, Rechte,
 │                       IP-Regel, Ablauf, Rate-Limit je Quell-IP; Klartext nur einmal bei Erzeugung

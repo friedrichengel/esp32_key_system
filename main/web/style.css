@@ -73,6 +73,11 @@ pre.recovery { font-size: 15px; line-height: 1.7; max-height: none; }
 .door .kv { margin-bottom: 6px; }
 .door button { width: 100%; }
 .door .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.door .row3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+/* Rolltor-Buttons: Auf gruen, Stopp rot, Ab bernstein */
+.door button.up { background: var(--ok); border-color: var(--ok); color: #fff; }
+.door button.stop { background: var(--danger); border-color: var(--danger); color: #fff; }
+.door button.down { background: var(--warn); border-color: var(--warn); color: #fff; }
 .hidden { display: none !important; }
 .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); padding: 10px 16px; border-radius: 8px;
          background: var(--fg); color: var(--bg); box-shadow: 0 4px 16px rgba(0,0,0,.3); z-index: 10; max-width: 90vw; }

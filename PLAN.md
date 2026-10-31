@@ -248,7 +248,8 @@ Speicherung: NVS-Namespace `codes`, bis ~200 Einträge, Codes im Klartext. Ehrli
 - `door_relay.c`: `door_open()` = Impuls auf Auf-Relais, neues `door_close()` = Impuls auf Ab-Relais; Auf und Ab verriegelt (Gegenrichtung lässt das laufende Relais sofort los). Keypad-Code und REX fahren auf. Protokoll: „Rolltor n 'Name' faehrt auf/ab (Grund), Relais r, ms“.
 - API: `/api/door/close` (Session + CSRF, Recht `open_doors`), `/api/v1/doors/<n>/close` (Bearer, `can_open`); Status liefert `kind`, `direction`, `last_direction`; `/api/system` liefert `kind`, `relay_up`, `relay_down`, `relays[]`.
 - UI: Typ und Relaisauswahl je Tür unter System → Türen und Relais, Übersicht zeigt beim Rolltor „Auf“/„Ab“-Buttons und den letzten Fahrbefehl.
-- Offen: auf Hardware mit echter Torsteuerung testen; evtl. Stopp-Befehl und Keypad-Code als Auf/Ab-Wechsel.
+- **Stopp** (31.10.2026): `door_stop()` beendet den laufenden Impuls sofort (Relais fällt ab), `/api/door/stop` und `/api/v1/doors/<n>/stop`, dritter Button auf der Karte. Nur die Relais-Ansteuerung endet; ob das Tor stehen bleibt, entscheidet die Torsteuerung (viele brauchen dafür einen eigenen Stopp-Eingang, dann wäre ein drittes Relais nötig).
+- Offen: auf Hardware mit echter Torsteuerung testen; evtl. Keypad-Code als Auf/Ab-Wechsel.
 
 ---
 

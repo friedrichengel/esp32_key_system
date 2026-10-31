@@ -73,7 +73,8 @@ Regeln (serverseitig):
 | Methode | Pfad | Beschreibung |
 |---|---|---|
 | POST | `/api/door/open` | Body optional `{door: n}` (Default: Tür des Keypads); Relais-Impuls mit eingestellter Dauer, beim Rolltor auf dem Auf-Relais → `{ok, door, name, kind, direction}`; Benutzer brauchen `open_doors` und die Tür in ihrer Maske (403); 404 unbekannte Tür, 409 Tür deaktiviert oder Relais nicht verfügbar |
-| POST | `/api/door/close` | wie `open`, aber Impuls auf dem Ab-Relais eines Rolltors → `{ok, door, name, kind, direction: "down"}`; 409 bei einem Türöffner |
+| POST | `/api/door/close` | wie `open`, aber Impuls auf dem Ab-Relais eines Rolltors → `{ok, door, name, kind, action: "down", direction: "down"}`; 409 bei einem Türöffner |
+| POST | `/api/door/stop` | Rolltor: laufenden Impuls sofort beenden, das Relais fällt ab → `{ok, door, name, kind, action: "stop"}`; ohne laufenden Impuls ebenfalls `ok`; 409 bei einem Türöffner. Ob das Tor selbst anhält, hängt von der Torsteuerung ab |
 | GET | `/api/keypad/raw` | **Admin.** Lernmodus: `{count, rx_total, last_rx_uptime_s, hex, ascii}` |
 
 ## Benutzer (Admin)
@@ -108,6 +109,7 @@ Token-Objekt: `{id, name, doors, can_open, can_status, enabled, allow_ip, expire
 | GET | `/api/v1/doors` | `{doors:[...]}` wie oben. Recht `can_status` |
 | POST | `/api/v1/doors/<n>/open` | Body optional `{pulse_ms}` (wird auf 500–30000 begrenzt) → `{ok, door, name, kind, direction}`. Rolltor: Impuls auf dem Auf-Relais. Recht `can_open` und Tür in der Maske; 403 sonst, 404 unbekannte Tür, 409 Tür deaktiviert |
 | POST | `/api/v1/doors/<n>/close` | nur Rolltor: Impuls auf dem Ab-Relais, sonst wie `open`; 409 bei einem Türöffner |
+| POST | `/api/v1/doors/<n>/stop` | nur Rolltor: laufenden Impuls sofort beenden → `{ok, door, name, kind, action: "stop"}`; Recht `can_open` |
 
 Fehler: 401 (Token fehlt, Format ungültig, unbekannt), 403 (gesperrt, abgelaufen, Quelladresse nicht erlaubt, Recht fehlt), 429 mit `Retry-After` nach 10 Fehlversuchen je Quell-IP (Sperre 60 s, verdoppelt sich bis 15 min). Jede Nutzung und jeder Fehlversuch steht im Protokoll mit Token-Name bzw. Quell-IP, nie mit dem Secret.
 
