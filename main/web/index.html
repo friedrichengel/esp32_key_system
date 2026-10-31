@@ -132,9 +132,9 @@
       <p class="note hidden" id="code-readonly-note">Dieser Code ist dir freigegeben. Du kannst ihn ein- und ausschalten; Änderungen nimmt der Besitzer vor.</p>
       <form id="form-code">
         <input type="hidden" name="id">
-        <div class="grid2">
+        <div class="grid2 tight">
           <label>Name <input name="name" maxlength="31" required placeholder="z. B. Hausmeister"></label>
-          <div class="field-row" style="margin:0"><label>Code <input name="code" minlength="4" maxlength="12" pattern="[A-Za-z0-9]{4,12}" required placeholder="4–12 Zeichen"></label>
+          <div class="field-row"><label>Code <input name="code" minlength="4" maxlength="12" pattern="[A-Za-z0-9]{4,12}" required placeholder="4–12 Zeichen"></label>
             <button type="button" class="secondary" id="btn-code-random" title="Zufallscode: Dauer-/Zeitcode 6 Stellen, Einmalcode 8 Stellen">Zufall</button></div>
           <label>Typ <select name="type"><option value="permanent">Dauercode</option><option value="timed">Zeitcode (von/bis)</option><option value="onetime">Einmalcode</option></select></label>
           <label id="code-owner-row" data-admin>Besitzer <select name="owner"></select></label>
