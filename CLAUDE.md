@@ -46,7 +46,8 @@ main/
 ├── event_log.[ch]      Ringpuffer (PSRAM) + Datei /storage/events.log mit Rotation
 ├── storage.[ch]        LittleFS unter /storage, atomares Schreiben (tmp + rename)
 ├── status_led.[ch]     WS2812 an GPIO60, Zustandsautomat mit Blinkmustern
-├── time_sync.[ch]      SNTP (esp_netif_sntp), TZ, Flag "Zeit gültig"
+├── time_sync.[ch]      SNTP (esp_netif_sntp), TZ, Flag "Zeit gültig"; Wächter-Task "ntpwatch": ohne Antwort nach
+│                       CFG_NTP_TIMEOUT_S Ursache (IP/Gateway/DNS/UDP) ins Protokoll; time_sync_retry() für /api/network/ntp-retry
 ├── net_eth.[ch]        EMAC RGMII + generischer PHY + YT8531-Workarounds, IPv4/IPv6, mDNS; optional WLAN-Station
 │                       zusätzlich (g_settings.wifi, Default aus, nur DHCP/SLAAC, kein SoftAP), net_wifi_scan()
 ├── cert_store.[ch]     /storage/webserver_cert.pem + _key.pem, EC-P-256 selbstsigniert (PSA), Upload-Validierung

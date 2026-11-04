@@ -155,6 +155,7 @@
     try { await loaders[view](); } catch (e) { toast(e.message, 'bad'); }
     if (view === 'dashboard') refreshTimer = setInterval(() => loadDashboard().catch(() => {}), 5000);
     if (view === 'system') refreshTimer = setInterval(() => loadLearn().catch(() => {}), 2000);
+    if (view === 'network') refreshTimer = setInterval(() => loadNtp().catch(() => {}), 6000);
     if (view === 'log') refreshTimer = setInterval(() => loadLog().catch(() => {}), 3000);
     if (view === 'codes') refreshTimer = setInterval(() => { if (graceRunning) loadCodes(true).catch(() => {}); }, 5000);
   }
@@ -717,6 +718,7 @@ sensor:
     $('#form-network').wifi_password.value = '';
     $('#form-network').wifi_password_clear.checked = false;
     toggleNetFields();
+    renderNtp(n.ntp);
   }
   function toggleNetFields() {
     const f = $('#form-network');
@@ -889,6 +891,30 @@ sensor:
     $('#card-admin-password').classList.toggle('hidden', session.uid !== 0);
     $('#learn-panel').classList.toggle('hidden', !s.keypad.learn_mode);
     if (s.keypad.learn_mode) await loadLearn();
+  }
+  function renderNtp(n) {
+    if (!n) return;
+    $('#ntp-timeout').textContent = n.timeout_s;
+    const servers = n.server1 + (n.server2 ? ', ' + n.server2 : '');
+    let state, cls;
+    if (n.valid && n.last_sync) { state = 'synchron'; cls = 'ok'; }
+    else if (n.valid) { state = 'plausibel (RTC nach Neustart), noch nicht per NTP bestätigt'; cls = 'warn'; }
+    else { state = 'nicht synchron'; cls = 'bad'; }
+    const attempt = !n.last_attempt_uptime_s ? 'noch keiner (keine IP-Adresse?)'
+      : 'vor ' + fmtUptime(n.uptime_s - n.last_attempt_uptime_s) + (n.pending ? ' (warte auf Antwort …)' : '');
+    kv($('#ntp-info'), [
+      ['Gerätezeit', esc(n.time) + (n.valid ? '' : ' (ungültig)'), n.valid ? '' : 'bad'],
+      ['Status', state, cls],
+      ['Letzte Synchronisation', n.last_sync ? fmtUnix(n.last_sync) + ` (${n.sync_count}× seit Start)` : 'noch nie', n.last_sync ? '' : 'warn'],
+      ['Letzter Versuch', attempt, n.pending ? 'warn' : ''],
+      ['Letztes Ergebnis', n.last_result ? esc(n.last_result) : (n.pending ? 'ausstehend' : '–'), n.last_failed ? 'bad' : (n.last_result ? 'ok' : '')],
+      ['Server', esc(servers)],
+      ['Zeitzone', esc(n.tz)]
+    ]);
+  }
+  async function loadNtp() {
+    if ($('#view-network').classList.contains('hidden')) return;
+    renderNtp(await api('/api/network/ntp'));
   }
   async function loadLearn() {
     if ($('#learn-panel').classList.contains('hidden')) return;
@@ -1164,6 +1190,17 @@ sensor:
     data.restore_network = $('#restore-net').checked;
     try { const r = await api('/api/restore', { method: 'POST', json: data }); toast('Eingespielt.' + (r.reboot_required ? ' Netzwerkänderungen nach Neustart aktiv.' : ''), 'ok'); }
     catch (e) { toast(e.message, 'bad'); }
+  });
+  $('#btn-ntp-retry').addEventListener('click', async () => {
+    const btn = $('#btn-ntp-retry');
+    btn.disabled = true;
+    try {
+      const n = await api('/api/network/ntp-retry', { method: 'POST' });
+      renderNtp(n);
+      toast(`NTP-Anfrage gesendet. Ergebnis in bis zu ${n.timeout_s} s hier und im Protokoll.`, 'ok');
+      setTimeout(() => loadNtp().catch(() => {}), 3000);
+      setTimeout(() => { loadNtp().catch(() => {}); btn.disabled = false; }, (n.timeout_s + 2) * 1000);
+    } catch (e) { toast(e.message, 'bad'); btn.disabled = false; }
   });
   $('#btn-reboot').addEventListener('click', async () => {
     if (!confirm('Gerät neu starten?')) return;

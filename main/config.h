@@ -113,6 +113,8 @@
 #define CFG_NTP_SERVER_1_DEFAULT  "pool.ntp.org"
 #define CFG_NTP_SERVER_2_DEFAULT  "time.cloudflare.com"
 #define CFG_TZ_DEFAULT            "CET-1CEST,M3.5.0,M10.5.0/3"
+#define CFG_NTP_TIMEOUT_S         20            /* ohne Antwort bis dahin: Ursache ins Protokoll  */
+#define CFG_NTP_REPEAT_LOG_S      600           /* gleiche NTP-Fehlermeldung so lange nicht erneut */
 
 /* ========================================================================
  * Dateisystem (LittleFS-Partition "storage")

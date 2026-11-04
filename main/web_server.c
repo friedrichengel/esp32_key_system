@@ -1206,12 +1206,38 @@ static esp_err_t h_status_get(httpd_req_t *req)
 /* ========================================================================
  * API: Netzwerk (Admin)
  * ====================================================================== */
+/* NTP-Zustand für die Netzwerk-Seite -> {running, valid, time, last_sync, last_attempt_uptime_s, uptime_s, pending, last_failed, last_result, server1, server2, timeout_s} */
+static cJSON *ntp_to_json(void)
+{
+    time_sync_status_t ts;
+    time_sync_get_status(&ts);
+    char tbuf[24];
+    time_sync_format_local(time(NULL), tbuf, sizeof(tbuf));
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddBoolToObject(o, "running", ts.running);
+    cJSON_AddBoolToObject(o, "valid", ts.valid);
+    cJSON_AddStringToObject(o, "time", tbuf);
+    cJSON_AddStringToObject(o, "tz", g_settings.net.tz[0] ? g_settings.net.tz : CFG_TZ_DEFAULT);
+    cJSON_AddNumberToObject(o, "last_sync", (double)ts.last_sync);
+    cJSON_AddNumberToObject(o, "sync_count", ts.sync_count);
+    cJSON_AddNumberToObject(o, "last_attempt_uptime_s", ts.last_attempt_uptime_s);
+    cJSON_AddNumberToObject(o, "uptime_s", (double)(esp_timer_get_time() / 1000000));
+    cJSON_AddBoolToObject(o, "pending", ts.attempt_pending);
+    cJSON_AddBoolToObject(o, "last_failed", ts.last_failed);
+    cJSON_AddStringToObject(o, "last_result", ts.last_result);
+    cJSON_AddStringToObject(o, "server1", ts.server1);
+    cJSON_AddStringToObject(o, "server2", ts.server2);
+    cJSON_AddNumberToObject(o, "timeout_s", ts.timeout_s);
+    return o;
+}
+
 static esp_err_t h_network_get(httpd_req_t *req)
 {
     req_auth_t a;
     if (!require_admin(req, &a)) return ESP_OK;
     cJSON *o = net_to_json(&g_settings.net);
     wifi_to_json(o, &g_settings.wifi, false);
+    cJSON_AddItemToObject(o, "ntp", ntp_to_json());
     return send_json(req, o);
 }
 
@@ -1837,6 +1863,24 @@ static esp_err_t h_password_post(httpd_req_t *req)
     char cookie[160];
     set_session_cookie(req, cookie, sizeof(cookie), NULL);
     return send_ok(req);
+}
+
+/* Admin: nur den NTP-Zustand (zum Nachladen auf der Netzwerk-Seite) */
+static esp_err_t h_ntp_get(httpd_req_t *req)
+{
+    req_auth_t a;
+    if (!require_admin(req, &a)) return ESP_OK;
+    return send_json(req, ntp_to_json());
+}
+
+/* Admin: SNTP-Client neu starten und sofort anfragen; Ergebnis landet nach CFG_NTP_TIMEOUT_S im Protokoll */
+static esp_err_t h_ntp_retry_post(httpd_req_t *req)
+{
+    req_auth_t a;
+    if (!require_admin_csrf(req, &a)) return ESP_OK;
+    esp_err_t err = time_sync_retry(a.p.name);
+    if (err != ESP_OK) return send_error(req, "500 Internal Server Error", "SNTP-Start fehlgeschlagen");
+    return send_json(req, ntp_to_json());
 }
 
 static esp_err_t h_reboot_post(httpd_req_t *req)
@@ -2764,6 +2808,8 @@ static const httpd_uri_t s_routes[] = {
     ROUTE("/api/status",               HTTP_GET,    h_status_get),
     ROUTE("/api/network",              HTTP_GET,    h_network_get),
     ROUTE("/api/network",              HTTP_POST,   h_network_post),
+    ROUTE("/api/network/ntp",          HTTP_GET,    h_ntp_get),
+    ROUTE("/api/network/ntp-retry",    HTTP_POST,   h_ntp_retry_post),
     ROUTE("/api/network/wifi-scan",    HTTP_GET,    h_wifi_scan),
     ROUTE("/api/cert",                 HTTP_GET,    h_cert_get),
     ROUTE("/api/cert/download",        HTTP_GET,    h_cert_download),

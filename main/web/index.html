@@ -383,6 +383,12 @@
         <label>NTP-Server 2 <input name="ntp2"></label>
         <label>Zeitzone (POSIX) <input name="tz"></label>
         <p class="hint">Mitteleuropa: <code>CET-1CEST,M3.5.0,M10.5.0/3</code></p>
+        <h3>Zustand</h3>
+        <div class="kv" id="ntp-info"></div>
+        <div class="row">
+          <button type="button" id="btn-ntp-retry" class="secondary">NTP jetzt erneut versuchen</button>
+        </div>
+        <p class="hint">Der Neuversuch startet den NTP-Client mit den gespeicherten Servern neu und fragt sofort an (geänderte Server vorher speichern). Kommt innerhalb von <span id="ntp-timeout">20</span> s keine Antwort, steht die wahrscheinliche Ursache (keine IP, DNS, keine Antwort) hier und im Protokoll. Ohne gültige Zeit sind Zeitcodes, Ablaufdaten und TOTP gesperrt.</p>
       </fieldset>
       <button type="submit">Speichern</button>
       <span class="hint">Netzwerkänderungen werden nach einem Neustart aktiv.</span>
