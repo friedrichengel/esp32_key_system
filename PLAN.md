@@ -100,7 +100,7 @@ esp32_key_system/
 ## 3. Netzwerk (Ethernet, IPv4/IPv6)
 
 - **Ethernet primär** über internen EMAC + RGMII + generischen PHY-Treiber (`esp_eth_phy_new_generic`). Nötige YT8531-Besonderheiten (aus dem ESP-IDF-Beispiel `ethernet/basic`): nach dem Reset Autonegotiation per `ETH_CMD_S_AUTONEGO` wieder einschalten und RX/TX-Clock-Delay ≈ 2 ns über die Extended-Register 0x1E/0x1F setzen (Reg 0xA001 Bit 8 für RX, Reg 0xA003 Delay-Stufe 13 für TX). Ohne das kommen keine Pakete durch.
-- **IPv4:** DHCP (Default) oder statisch (IP, Maske, Gateway, DNS1/DNS2).
+- **IPv4:** DHCP (Default) oder statisch (IP, Maske, Gateway). DNS1/DNS2 unabhängig davon: leer = automatisch, gesetzt = fest (auch bei DHCP; wird nach jedem Lease und RDNSS erneut gesetzt, da lwIP die DNS-Server global hält).
 - **IPv6:** Link-Local immer; SLAAC (`CONFIG_LWIP_IPV6_AUTOCONFIG`) ein/aus; zusätzlich **statische IPv6-Adresse** + Präfixlänge + Gateway; DNS via RDNSS oder stateless DHCPv6 (`CONFIG_LWIP_IPV6_DHCP6`). Stateful DHCPv6 bietet lwIP nicht, das wird auf der Admin-Seite so benannt.
 - **Hostname + mDNS** (`<hostname>.local`), damit das Gerät ohne feste IP gefunden wird.
 - **Zeit:** SNTP (2 Server konfigurierbar, IPv6-fähig), Zeitzone als POSIX-TZ-String (Default `CET-1CEST,M3.5.0,M10.5.0/3`). Ein Flag „Zeit gültig“ steuert, ob Zeitcodes akzeptiert werden.

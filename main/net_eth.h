@@ -56,6 +56,7 @@ typedef struct {
 esp_err_t net_eth_start(void);
 void      net_eth_get_status(net_status_t *st);
 bool      net_eth_has_ip(void);              /* irgendeine Schnittstelle hat IPv4 */
+bool      net_eth_dns_static(void);          /* feste DNS-Server eingetragen (gilt auch bei DHCP) */
 esp_netif_t *net_eth_get_netif(void);        /* Ethernet-netif */
 /* WLAN-Umgebung scannen (blockierend, einige Sekunden). Läuft WLAN nicht, wird der Treiber
  * nur für den Scan gestartet und danach wieder beendet. Doppelte SSIDs werden zusammengefasst,

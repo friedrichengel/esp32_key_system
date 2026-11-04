@@ -227,7 +227,7 @@
         ['Hostname', s.network.hostname + '.local'],
         ['IPv4', s.network.has_ip4 ? `${s.network.ip4} / ${s.network.mask4}` + (s.network.ip4_fallback ? ' (Rückfall, kein DHCP)' : s.network.ip4_mode === 'static' ? ' (statisch)' : ' (DHCP)') : 'keine', s.network.has_ip4 ? (s.network.ip4_fallback ? 'warn' : '') : 'warn'],
         ['Gateway', s.network.gw4],
-        ['DNS', [s.network.dns1, s.network.dns2].filter(x => x && x !== '0.0.0.0').join(', ')],
+        ['DNS', [s.network.dns1, s.network.dns2].filter(x => x && x !== '0.0.0.0').join(', ') + (s.network.dns_static ? ' (fest)' : '')],
         ['IPv6', s.network.ip6.join('<br>')],
         ['MAC', s.network.mac]
       ]);
@@ -715,6 +715,7 @@ sensor:
     const n = await api('/api/network');
     wifiPasswordSet = !!n.wifi_password_set;
     fillForm($('#form-network'), n);
+    $('#form-network').dns_mode.value = (n.dns1 || n.dns2) ? 'static' : 'auto';
     $('#form-network').wifi_password.value = '';
     $('#form-network').wifi_password_clear.checked = false;
     toggleNetFields();
@@ -724,6 +725,7 @@ sensor:
     const f = $('#form-network');
     const st = f.ipv4_mode.value === 'static';
     $('#ipv4-static').classList.toggle('hidden', !st);
+    $('#dns-static').classList.toggle('hidden', f.dns_mode.value !== 'static');
     $('#ipv6-static').classList.toggle('hidden', !f.ipv6_static_enable.checked);
     $('#wifi-fields').classList.toggle('hidden', !f.wifi_enabled.checked);
     f.wifi_password.placeholder = wifiPasswordSet ? 'unverändert lassen' : '8 bis 63 Zeichen';
@@ -1104,6 +1106,9 @@ sensor:
   $('#form-network').hostname.addEventListener('input', toggleNetFields);
   onSubmit('#form-network', async (f) => {
     const d = formData(f);
+    if (d.dns_mode === 'static' && !d.dns1.trim()) throw new Error('DNS 1 eingeben oder DNS auf „Automatisch“ stellen');
+    if (d.dns_mode !== 'static') { d.dns1 = ''; d.dns2 = ''; }
+    delete d.dns_mode;
     if (d.wifi_enabled && !d.wifi_ssid.trim()) throw new Error('WLAN-Name (SSID) fehlt');
     if (d.wifi_enabled && !d.wifi_password && !wifiPasswordSet && !d.wifi_password_clear) throw new Error('WLAN-Passwort eingeben oder „Passwort löschen“ für ein offenes Netz wählen');
     const r = await api('/api/network', { method: 'POST', json: d });

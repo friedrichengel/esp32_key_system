@@ -43,7 +43,7 @@ typedef struct {
     char     ipv4_addr[SETTINGS_STR_IP4];
     char     ipv4_mask[SETTINGS_STR_IP4];
     char     ipv4_gw[SETTINGS_STR_IP4];
-    char     dns1[SETTINGS_STR_IP4];        /* leer = vom DHCP */
+    char     dns1[SETTINGS_STR_IP4];        /* leer = vom DHCP/RA; gesetzt = fest, auch bei DHCP */
     char     dns2[SETTINGS_STR_IP4];
 
     /* IPv6 – Link-Local gibt es immer */

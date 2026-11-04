@@ -351,8 +351,15 @@
           <label>Netzmaske <input name="ipv4_mask" placeholder="255.255.255.0"></label>
           <label>Gateway <input name="ipv4_gw" placeholder="192.168.1.1"></label>
         </div>
-        <label>DNS 1 <input name="dns1" placeholder="leer = vom DHCP"></label>
-        <label>DNS 2 <input name="dns2"></label>
+      </fieldset>
+      <fieldset><legend>DNS</legend>
+        <label><input type="radio" name="dns_mode" value="auto"> Automatisch (vom DHCP-Server bzw. Router Advertisement)</label>
+        <label><input type="radio" name="dns_mode" value="static"> Statisch (auch bei DHCP-Adresse)</label>
+        <div id="dns-static">
+          <label>DNS 1 <input name="dns1" placeholder="192.168.1.1"></label>
+          <label>DNS 2 <input name="dns2" placeholder="optional"></label>
+        </div>
+        <p class="hint">Feste DNS-Server gelten für Ethernet und WLAN und werden nach jedem DHCP-Lease erneut gesetzt. Bei statischer IPv4-Adresse ohne DNS-Eintrag kann das Gerät keine Namen (NTP-Server) auflösen.</p>
       </fieldset>
       <fieldset><legend>IPv6</legend>
         <p class="hint">Link-Local ist immer aktiv. Der Standard-Router kommt aus Router Advertisements (kein stateful DHCPv6).</p>

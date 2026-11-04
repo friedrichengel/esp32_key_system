@@ -194,16 +194,38 @@ static void apply_ipv4_settings(void)
         ESP_LOGW(TAG, "dhcpc_stop: %s", esp_err_to_name(err));
     }
     ESP_ERROR_CHECK_WITHOUT_ABORT(esp_netif_set_ip_info(s_netif, &ip));
+    ESP_LOGI(TAG, "Statische IPv4 %s/%s gw %s", n->ipv4_addr, n->ipv4_mask, n->ipv4_gw);
+}
 
+/* Fest eingetragene DNS-Server gelten unabhängig vom IPv4-Modus. lwIP hält die DNS-Server
+ * global und überschreibt sie bei jedem DHCP-Lease (auch WLAN) und bei RDNSS aus Router
+ * Advertisements, deshalb wird diese Funktion nach jedem IP-Ereignis erneut aufgerufen.
+ * Rückgabe: true, wenn mindestens ein Server gesetzt wurde. */
+static bool apply_dns_settings(void)
+{
+    const settings_network_t *n = &g_settings.net;
     esp_netif_dns_info_t dns = {0};
     dns.ip.type = ESP_IPADDR_TYPE_V4;
+    bool any = false;
     if (n->dns1[0] && esp_netif_str_to_ip4(n->dns1, &dns.ip.u_addr.ip4) == ESP_OK) {
         esp_netif_set_dns_info(s_netif, ESP_NETIF_DNS_MAIN, &dns);
+        any = true;
     }
     if (n->dns2[0] && esp_netif_str_to_ip4(n->dns2, &dns.ip.u_addr.ip4) == ESP_OK) {
         esp_netif_set_dns_info(s_netif, ESP_NETIF_DNS_BACKUP, &dns);
+        any = true;
+    } else if (any) {
+        /* nur ein fester Server: zweiten Eintrag leeren, sonst bleibt der vom DHCP stehen */
+        esp_netif_dns_info_t none = {0};
+        none.ip.type = ESP_IPADDR_TYPE_V4;
+        esp_netif_set_dns_info(s_netif, ESP_NETIF_DNS_BACKUP, &none);
     }
-    ESP_LOGI(TAG, "Statische IPv4 %s/%s gw %s", n->ipv4_addr, n->ipv4_mask, n->ipv4_gw);
+    return any;
+}
+
+bool net_eth_dns_static(void)
+{
+    return g_settings.net.dns1[0] || g_settings.net.dns2[0];
 }
 
 static void apply_ipv6_static(void)
@@ -270,6 +292,9 @@ static void eth_event_handler(void *arg, esp_event_base_t base, int32_t id, void
                   st.full_duplex ? "Vollduplex" : "Halbduplex");
         esp_netif_create_ip6_linklocal(s_netif);
         apply_ipv6_static();
+        if (apply_dns_settings()) {
+            ESP_LOGI(TAG, "Feste DNS-Server: %s %s", g_settings.net.dns1, g_settings.net.dns2);
+        }
         dhcp_watch_start();
         break;
     }
@@ -352,6 +377,7 @@ static void ip_event_handler(void *arg, esp_event_base_t base, int32_t id, void 
         event_log(EV_NETWORK, "IPv4 " IPSTR " / " IPSTR " gw " IPSTR "%s",
                   IP2STR(&ev->ip_info.ip), IP2STR(&ev->ip_info.netmask), IP2STR(&ev->ip_info.gw),
                   s_fallback_active ? " (Rueckfalladresse)" : "");
+        apply_dns_settings();
         mdns_start();
         time_sync_start();
         break;
@@ -361,6 +387,7 @@ static void ip_event_handler(void *arg, esp_event_base_t base, int32_t id, void 
         s_wifi_has_ip4 = true;
         event_log(EV_NETWORK, "WLAN IPv4 " IPSTR " / " IPSTR " gw " IPSTR,
                   IP2STR(&ev->ip_info.ip), IP2STR(&ev->ip_info.netmask), IP2STR(&ev->ip_info.gw));
+        apply_dns_settings();
         mdns_start();
         time_sync_start();
         break;
@@ -382,6 +409,7 @@ static void ip_event_handler(void *arg, esp_event_base_t base, int32_t id, void 
                   type == ESP_IP6_ADDR_IS_GLOBAL ? "global" :
                   type == ESP_IP6_ADDR_IS_UNIQUE_LOCAL ? "ULA" : "sonstige");
         if (type != ESP_IP6_ADDR_IS_LINK_LOCAL) {
+            apply_dns_settings();   /* RDNSS aus dem Router Advertisement ggf. zurücknehmen */
             mdns_start();
             time_sync_start();
         }
@@ -518,6 +546,7 @@ esp_err_t net_eth_start(void)
 
     esp_netif_set_hostname(s_netif, g_settings.net.hostname);
     apply_ipv4_settings();
+    apply_dns_settings();
 
     const esp_timer_create_args_t targs = { .callback = dhcp_timer_cb, .name = "dhcp_fallback" };
     ESP_ERROR_CHECK_WITHOUT_ABORT(esp_timer_create(&targs, &s_dhcp_timer));

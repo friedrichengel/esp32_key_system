@@ -1188,6 +1188,7 @@ static esp_err_t h_status_get(httpd_req_t *req)
     }
     cJSON_AddStringToObject(net, "dns1", ns.dns1);
     cJSON_AddStringToObject(net, "dns2", ns.dns2);
+    cJSON_AddBoolToObject(net, "dns_static", net_eth_dns_static());
     cJSON *ip6 = cJSON_AddArrayToObject(net, "ip6");
     for (int i = 0; i < ns.ip6_count; i++) {
         cJSON_AddItemToArray(ip6, cJSON_CreateString(ns.ip6[i]));
