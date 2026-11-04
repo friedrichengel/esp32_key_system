@@ -48,8 +48,11 @@ esp_err_t door_init(void);
 esp_err_t door_open(int idx, const char *reason, uint32_t pulse_ms);
 /* Rolltor: Relais "Ab" anziehen; ESP_ERR_NOT_SUPPORTED bei einem Türöffner. */
 esp_err_t door_close(int idx, const char *reason, uint32_t pulse_ms);
-/* Rolltor: laufenden Impuls sofort beenden, beide Relais (Auf und Ab) fallen ab. Ohne laufenden
- * Impuls ESP_OK. ESP_ERR_NOT_SUPPORTED bei einem Türöffner. */
+/* Rolltor: Stopp = den letzten Fahrbefehl (auf oder ab) als neuen Impuls wiederholen, weil die
+ * Torsteuerung auf einen erneuten Impuls derselben Richtung anhält. Zieht das Relais noch an, fällt
+ * es zuerst ab und der neue Impuls folgt nach CFG_GATE_REPULSE_GAP_MS (blockiert so lange).
+ * ESP_ERR_NOT_FOUND wenn seit dem Start noch kein Fahrbefehl lief (dann passiert nichts),
+ * ESP_ERR_NOT_SUPPORTED bei einem Türöffner. */
 esp_err_t door_stop(int idx, const char *reason);
 bool      door_is_enabled(int idx);
 bool      door_is_gate(int idx);

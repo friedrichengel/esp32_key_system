@@ -1607,6 +1607,7 @@ static esp_err_t door_action_error(httpd_req_t *req, esp_err_t err, bool *sent)
     if (err == ESP_OK) { *sent = false; return ESP_OK; }
     if (err == ESP_ERR_INVALID_ARG) return send_error(req, "404 Not Found", "Tuer nicht vorhanden");
     if (err == ESP_ERR_NOT_SUPPORTED) return send_error(req, "409 Conflict", "Ab und Stopp gibt es nur bei einem Rolltor");
+    if (err == ESP_ERR_NOT_FOUND) return send_error(req, "409 Conflict", "Noch kein Fahrbefehl seit dem Start, Stopp hat nichts zu wiederholen");
     if (err == ESP_ERR_INVALID_STATE) return send_error(req, "409 Conflict", "Tuer ist deaktiviert oder ihr Relais ist nicht verfuegbar");
     return send_error(req, "500 Internal Server Error", "Relais konnte nicht geschaltet werden");
 }
@@ -1655,7 +1656,8 @@ static esp_err_t h_door_action(httpd_req_t *req, door_dir_t dir)
     cJSON_AddStringToObject(o, "name", door_name(idx));
     cJSON_AddStringToObject(o, "kind", door_kind_name(g_settings.door_ext[idx].kind));
     cJSON_AddStringToObject(o, "action", door_action_name(dir));
-    cJSON_AddStringToObject(o, "direction", door_dir_name(dir));
+    /* Stopp wiederholt die letzte Richtung, die steht dann in direction */
+    cJSON_AddStringToObject(o, "direction", door_dir_name(dir == DOOR_DIR_NONE ? door_last_dir(idx) : dir));
     return send_json(req, o);
 }
 

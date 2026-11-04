@@ -68,6 +68,7 @@
 #define CFG_RELAY_PULSE_MS_MIN    500
 #define CFG_RELAY_PULSE_MS_MAX    30000         /* harte Obergrenze in der Firmware         */
 #define CFG_INPUT_DEBOUNCE_MS     50
+#define CFG_GATE_REPULSE_GAP_MS   300           /* Rolltor-Stopp: Pause vor dem erneuten Impuls, wenn das Relais noch anzieht */
 
 /* ========================================================================
  * Zutrittslogik

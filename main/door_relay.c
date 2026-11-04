@@ -170,7 +170,8 @@ void door_relay_safe_init(void)
     }
 }
 
-static esp_err_t door_pulse(int idx, door_dir_t dir, const char *reason, uint32_t pulse_ms)
+/* repeat: Stopp-Befehl, der die letzte Richtung erneut impulst (nur Protokolltext) */
+static esp_err_t door_pulse(int idx, door_dir_t dir, const char *reason, uint32_t pulse_ms, bool repeat)
 {
     if (!valid_idx(idx)) return ESP_ERR_INVALID_ARG;
     const settings_door_t *cfg = &g_settings.doors[idx];
@@ -206,7 +207,10 @@ static esp_err_t door_pulse(int idx, door_dir_t dir, const char *reason, uint32_
         release_cb((void *)(intptr_t)idx);
         return err;
     }
-    if (gate) {
+    if (gate && repeat) {
+        event_log(EV_ACCESS, "Rolltor %d '%s' Stopp (%s): Impuls %s erneut, Relais %d, %" PRIu32 " ms", idx + 1,
+                  cfg->name, reason ? reason : "?", dir == DOOR_DIR_DOWN ? "ab" : "auf", relay + 1, pulse_ms);
+    } else if (gate) {
         event_log(EV_ACCESS, "Rolltor %d '%s' faehrt %s (%s), Relais %d, %" PRIu32 " ms", idx + 1, cfg->name,
                   dir == DOOR_DIR_DOWN ? "ab" : "auf", reason ? reason : "?", relay + 1, pulse_ms);
     } else {
@@ -218,12 +222,12 @@ static esp_err_t door_pulse(int idx, door_dir_t dir, const char *reason, uint32_
 
 esp_err_t door_open(int idx, const char *reason, uint32_t pulse_ms)
 {
-    return door_pulse(idx, DOOR_DIR_UP, reason, pulse_ms);
+    return door_pulse(idx, DOOR_DIR_UP, reason, pulse_ms, false);
 }
 
 esp_err_t door_close(int idx, const char *reason, uint32_t pulse_ms)
 {
-    return door_pulse(idx, DOOR_DIR_DOWN, reason, pulse_ms);
+    return door_pulse(idx, DOOR_DIR_DOWN, reason, pulse_ms, false);
 }
 
 esp_err_t door_stop(int idx, const char *reason)
@@ -233,23 +237,18 @@ esp_err_t door_stop(int idx, const char *reason)
     const settings_door_t *cfg = &g_settings.doors[idx];
     if (!cfg->enabled) return ESP_ERR_INVALID_STATE;
     door_state_t *d = &s_doors[idx];
-    if (d->timer) esp_timer_stop(d->timer);
-    bool was_active = d->relay_active;
-    door_dir_t dir = (door_dir_t)d->active_dir;
-    release_door(idx);
-    /* Sicherheitshalber beide Relais des Rolltors abschalten, unabhaengig vom Zustand */
-    for (int k = 0; k < 2; k++) {
-        int r = relay_for(idx, k == 0 ? DOOR_DIR_UP : DOOR_DIR_DOWN);
-        if (r >= 0 && s_relay_owner[r] == idx) relay_write(r, false);
+    door_dir_t dir = (door_dir_t)d->last_dir;
+    if (dir == DOOR_DIR_NONE) {
+        ESP_LOGI(TAG, "Rolltor %d Stopp ohne vorherigen Fahrbefehl (%s), nichts zu tun", idx + 1, reason ? reason : "?");
+        return ESP_ERR_NOT_FOUND;
     }
-    if (!door_any_relay_active()) status_led_set(LED_OK);
-    if (was_active) {
-        event_log(EV_ACCESS, "Rolltor %d '%s' Stopp (%s), Fahrt %s abgebrochen", idx + 1, cfg->name,
-                  reason ? reason : "?", dir == DOOR_DIR_DOWN ? "ab" : "auf");
-    } else {
-        ESP_LOGI(TAG, "Rolltor %d Stopp ohne laufenden Impuls (%s)", idx + 1, reason ? reason : "?");
+    if (d->relay_active) {
+        /* Relais zieht noch an: erst loslassen, damit die Torsteuerung einen neuen Impuls erkennt */
+        if (d->timer) esp_timer_stop(d->timer);
+        release_door(idx);
+        vTaskDelay(pdMS_TO_TICKS(CFG_GATE_REPULSE_GAP_MS));
     }
-    return ESP_OK;
+    return door_pulse(idx, dir, reason, 0, true);
 }
 
 bool door_relay_active(int idx)

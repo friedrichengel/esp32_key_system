@@ -75,7 +75,7 @@ Regeln (serverseitig):
 |---|---|---|
 | POST | `/api/door/open` | Body optional `{door: n}` (Default: Tür des Keypads); Relais-Impuls mit eingestellter Dauer, beim Rolltor auf dem Auf-Relais → `{ok, door, name, kind, direction}`; Benutzer brauchen `open_doors` und die Tür in ihrer Maske (403); 404 unbekannte Tür, 409 Tür deaktiviert oder Relais nicht verfügbar |
 | POST | `/api/door/close` | wie `open`, aber Impuls auf dem Ab-Relais eines Rolltors → `{ok, door, name, kind, action: "down", direction: "down"}`; 409 bei einem Türöffner |
-| POST | `/api/door/stop` | Rolltor: laufenden Impuls sofort beenden, das Relais fällt ab → `{ok, door, name, kind, action: "stop"}`; ohne laufenden Impuls ebenfalls `ok`; 409 bei einem Türöffner. Ob das Tor selbst anhält, hängt von der Torsteuerung ab |
+| POST | `/api/door/stop` | Rolltor: den letzten Fahrbefehl (auf oder ab) als neuen Impuls wiederholen, weil die Torsteuerung auf einen erneuten Impuls derselben Richtung anhält → `{ok, door, name, kind, action: "stop", direction}` (`direction` = wiederholte Richtung). Zieht das Relais noch an, fällt es erst ab und der neue Impuls folgt nach 300 ms. 409 ohne vorherigen Fahrbefehl seit dem Start (dann passiert nichts) und bei einem Türöffner |
 | GET | `/api/keypad/raw` | **Admin.** Lernmodus: `{count, rx_total, last_rx_uptime_s, hex, ascii}` |
 
 ## Benutzer (Admin)
@@ -110,7 +110,7 @@ Token-Objekt: `{id, name, doors, can_open, can_status, enabled, allow_ip, expire
 | GET | `/api/v1/doors` | `{doors:[...]}` wie oben. Recht `can_status` |
 | POST | `/api/v1/doors/<n>/open` | Body optional `{pulse_ms}` (wird auf 500–30000 begrenzt) → `{ok, door, name, kind, direction}`. Rolltor: Impuls auf dem Auf-Relais. Recht `can_open` und Tür in der Maske; 403 sonst, 404 unbekannte Tür, 409 Tür deaktiviert |
 | POST | `/api/v1/doors/<n>/close` | nur Rolltor: Impuls auf dem Ab-Relais, sonst wie `open`; 409 bei einem Türöffner |
-| POST | `/api/v1/doors/<n>/stop` | nur Rolltor: laufenden Impuls sofort beenden → `{ok, door, name, kind, action: "stop"}`; Recht `can_open` |
+| POST | `/api/v1/doors/<n>/stop` | nur Rolltor: letzten Fahrbefehl als neuen Impuls wiederholen (siehe `/api/door/stop`) → `{ok, door, name, kind, action: "stop"}`; 409 ohne vorherigen Fahrbefehl; Recht `can_open` |
 
 | GET/POST | `/api/v1/sms` | Zutritt per SMS über die SMS-Weiterleitung eines Mobilfunkrouters. Felder als Query-String (GET), Formular (POST `application/x-www-form-urlencoded`) oder JSON: `number` (Absender, auch `sender`/`from`), `text` (SMS-Text, auch `message`/`msg`), `token` (Bearer-Token, falls kein `Authorization`-Header möglich ist), `base64=1` (Text ist Base64-kodiert). SMS-Text: `<Code> [Türnummer] [auf\|ab\|stop]`, z. B. `123456`, `123456 2 auf`, `123456 1 ab`, `123456 stop`; ohne Türnummer gilt die Keypad-Tür, wenn das Token sie darf, sonst die erste erlaubte aktive Tür. Der Code wird wie am Keypad geprüft (Gültigkeit, Zeitfenster, Nutzungen, Türmaske) und zählt als Nutzung; falsche Codes zählen auf das Rate-Limit der Router-IP. → `{ok, door, name, kind, action, code_name}`; 400 unverständliche SMS, 403 Code abgelehnt oder Tür nicht erlaubt, 409 Tür deaktiviert. Recht `can_open` |
 
