@@ -58,14 +58,16 @@ typedef struct {
     char     tz[SETTINGS_STR_TZ];           /* POSIX-TZ-String */
 } settings_network_t;
 
-/* Eine Tür = ein Relais, optional Türkontakt und Austaster (Pins in config.h) */
+/* Eine Tür = ein Relais, zwei optionale Eingänge (Pins in config.h). Türöffner: Eingang 1 =
+ * Türkontakt, Eingang 2 = Austaster. Rolltor: Eingang 1 = Endlage "zu", Eingang 2 = Endlage
+ * "auf"; der Austaster des Rolltors liegt auf dem Zusatzeingang door_ext.rex_input. */
 typedef struct {
     bool     enabled;
     char     name[SETTINGS_STR_SHORT];
     uint16_t relay_pulse_ms;                /* Impulsdauer; Rolltor: je Fahrbefehl        */
     bool     relay_active_low;              /* gilt für alle Relais dieser Tür            */
-    bool     door_contact_enable;
-    bool     exit_button_enable;
+    bool     door_contact_enable;           /* Eingang 1 angeschlossen (Kontakt / Endlage zu)  */
+    bool     exit_button_enable;            /* Eingang 2 angeschlossen (REX / Endlage auf)     */
 } settings_door_t;
 
 typedef enum {
@@ -81,7 +83,7 @@ typedef struct {
     uint8_t  kind;                          /* door_kind_t                                */
     uint8_t  relay_up;                      /* Relaisindex 0..CFG_MAX_DOORS-1 für "Auf"   */
     uint8_t  relay_down;                    /* Relaisindex für "Ab"                       */
-    uint8_t  reserved;
+    uint8_t  rex_input;                     /* Rolltor: Austaster auf Zusatzeingang 1..CFG_AUX_INPUTS, 0 = keiner */
 } settings_door_ext_t;
 
 typedef enum {

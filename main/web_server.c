@@ -402,15 +402,30 @@ static cJSON *door_cfg_to_json(int idx)
     cJSON_AddNumberToObject(o, "relay_down", e->relay_down + 1);
     cJSON_AddNumberToObject(o, "relay_pulse_ms", d->relay_pulse_ms);
     cJSON_AddBoolToObject(o, "relay_active_low", d->relay_active_low);
-    cJSON_AddBoolToObject(o, "door_contact_enable", d->door_contact_enable);
-    cJSON_AddBoolToObject(o, "exit_button_enable", d->exit_button_enable);
+    cJSON_AddBoolToObject(o, "door_contact_enable", d->door_contact_enable);   /* Eingang 1: Kontakt / Endlage zu  */
+    cJSON_AddBoolToObject(o, "exit_button_enable", d->exit_button_enable);     /* Eingang 2: REX / Endlage auf     */
+    cJSON_AddNumberToObject(o, "rex_input", e->rex_input);                     /* Rolltor: Zusatzeingang 1..N, 0 = keiner */
     cJSON *pins = cJSON_AddObjectToObject(o, "pins");
     cJSON_AddNumberToObject(pins, "relay", door_relay_gpio(idx));
     cJSON_AddNumberToObject(pins, "relay_up", door_relay_up_gpio(idx));
     cJSON_AddNumberToObject(pins, "relay_down", door_relay_down_gpio(idx));
     cJSON_AddNumberToObject(pins, "contact", door_contact_gpio(idx));
+    cJSON_AddNumberToObject(pins, "input2", door_input2_gpio(idx));
     cJSON_AddNumberToObject(pins, "rex", door_rex_gpio(idx));
     return o;
+}
+
+/* Zusatzeingänge 1..CFG_AUX_INPUTS mit GPIO, für den Austaster eines Rolltors */
+static cJSON *aux_inputs_to_json(void)
+{
+    cJSON *arr = cJSON_CreateArray();
+    for (int n = 0; n < CFG_AUX_INPUTS; n++) {
+        cJSON *o = cJSON_CreateObject();
+        cJSON_AddNumberToObject(o, "input", n + 1);
+        cJSON_AddNumberToObject(o, "gpio", door_aux_input_gpio(n));
+        cJSON_AddItemToArray(arr, o);
+    }
+    return arr;
 }
 
 /* Relais-Pool: Nummer 1..CFG_MAX_DOORS mit GPIO, für die Auswahl beim Rolltor */
@@ -452,6 +467,8 @@ static void door_from_json(const cJSON *d, settings_door_t *s, settings_door_ext
     s->relay_active_low = jbool(d, "relay_active_low", s->relay_active_low);
     s->door_contact_enable = jbool(d, "door_contact_enable", s->door_contact_enable);
     s->exit_button_enable = jbool(d, "exit_button_enable", s->exit_button_enable);
+    int rex = jint(d, "rex_input", e->rex_input);
+    if (rex >= 0 && rex <= CFG_AUX_INPUTS) e->rex_input = (uint8_t)rex;
 }
 
 /* Akzeptiert ein Array [{door:n, ...}] oder (Backups vor v2) ein einzelnes Objekt für Tür 1.
@@ -501,6 +518,10 @@ static cJSON *door_status_json(int i)
     cJSON_AddStringToObject(d, "last_direction", door_dir_name(door_last_dir(i)));
     cJSON_AddBoolToObject(d, "contact_enabled", g_settings.doors[i].door_contact_enable);
     cJSON_AddBoolToObject(d, "contact_closed", door_contact_closed(i));
+    bool gate = door_is_gate(i);
+    cJSON_AddBoolToObject(d, "open_contact_enabled", gate && g_settings.doors[i].exit_button_enable);
+    cJSON_AddBoolToObject(d, "open_contact_active", door_open_contact_active(i));
+    cJSON_AddStringToObject(d, "position", door_position_name(door_position(i)));
     cJSON_AddNumberToObject(d, "last_open_uptime_s", (double)door_last_open_uptime_s(i));
     return d;
 }
@@ -1689,6 +1710,7 @@ static esp_err_t h_system_get(httpd_req_t *req)
     cJSON_AddItemToObject(o, "doors", doors_to_json());
     cJSON_AddNumberToObject(o, "max_doors", CFG_MAX_DOORS);
     cJSON_AddItemToObject(o, "relays", relays_to_json());
+    cJSON_AddItemToObject(o, "aux_inputs", aux_inputs_to_json());
     cJSON_AddItemToObject(o, "keypad", keypad_to_json(&g_settings.keypad));
     cJSON_AddItemToObject(o, "site", site_to_json(&g_settings.site));
     cJSON_AddItemToObject(o, "sms", sms_to_json(&g_settings.sms, false));

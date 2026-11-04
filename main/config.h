@@ -44,15 +44,20 @@
 #define CFG_KEYPAD_CLOSE_PRESSES_MAX 6
 #define CFG_KEYPAD_RAW_BUF        256           /* Rohbytes für den Lernmodus                */
 
-/* Türen: bis zu CFG_MAX_DOORS Relais, je Tür optional Türkontakt (Reed gegen GND) und
- * Austaster (REX, gegen GND), beide mit internem Pull-up. Tür 1 = ursprüngliche Pins.
- * Die Pins der Türen 2-4 liegen auf freien J2-Pins; GPIO2/3 bleiben als Reserve frei. */
+/* Türen: bis zu CFG_MAX_DOORS Relais, je Tür zwei Eingänge gegen GND mit internem Pull-up.
+ * Türöffner: Eingang 1 = Türkontakt (Reed), Eingang 2 = Austaster (REX).
+ * Rolltor:   Eingang 1 = Endlage "Tor zu", Eingang 2 = Endlage "Tor auf" (beide über
+ *            Optokoppler); der Austaster liegt dann auf einem Zusatzeingang (GPIO2/3).
+ * Tür 1 = ursprüngliche Pins, die Pins der Türen 2-4 liegen auf freien J2-Pins. */
 #define CFG_MAX_DOORS             4
 #define CFG_ALL_DOORS_MASK        ((1u << CFG_MAX_DOORS) - 1)
 /*                                  Tür 1        Tür 2        Tür 3        Tür 4   */
 #define CFG_DOOR_RELAY_GPIOS      { GPIO_NUM_40, GPIO_NUM_43, GPIO_NUM_46, GPIO_NUM_49 }  /* J2-19, 17, 16, 11 */
 #define CFG_DOOR_CONTACT_GPIOS    { GPIO_NUM_42, GPIO_NUM_44, GPIO_NUM_47, GPIO_NUM_36 }  /* J2-20, 18, 13, 24 */
 #define CFG_DOOR_REX_GPIOS        { GPIO_NUM_39, GPIO_NUM_45, GPIO_NUM_48, GPIO_NUM_35 }  /* J2-21, 15, 14, 25 */
+/* Zusatzeingänge (Austaster eines Rolltors), Auswahl je Tor in den Settings (1..N, 0 = keiner) */
+#define CFG_AUX_INPUTS            2
+#define CFG_AUX_INPUT_GPIOS       { GPIO_NUM_2, GPIO_NUM_3 }                                /* J2-7, J2-10 */
 #define CFG_RELAY_ACTIVE_LOW      0             /* Compile-Zeit-Default, bis NVS gelesen ist */
 #define CFG_WIFI_RETRY_S          5             /* WLAN: Pause zwischen Verbindungsversuchen  */
 #define CFG_WIFI_SCAN_MAX         20            /* WLAN-Suche: max. gelieferte Netze          */

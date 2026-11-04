@@ -18,6 +18,7 @@ static const char *TAG = "door";
 static const gpio_num_t s_relay_gpio[CFG_MAX_DOORS]   = CFG_DOOR_RELAY_GPIOS;
 static const gpio_num_t s_contact_gpio[CFG_MAX_DOORS] = CFG_DOOR_CONTACT_GPIOS;
 static const gpio_num_t s_rex_gpio[CFG_MAX_DOORS]     = CFG_DOOR_REX_GPIOS;
+static const gpio_num_t s_aux_gpio[CFG_AUX_INPUTS]    = CFG_AUX_INPUT_GPIOS;
 
 typedef struct {
     esp_timer_handle_t timer;
@@ -26,17 +27,24 @@ typedef struct {
     volatile uint8_t active_dir;                  /* door_dir_t */
     uint8_t  last_dir;
     int64_t  last_open_s;
-    bool     contact_closed;
-    bool     contact_known;
-    bool     inputs_configured;
-    int      contact_cnt;
-    int      rex_cnt;
-    bool     rex_pressed;
+    bool     inputs_configured;                   /* Eingang 1 und 2 als Eingang konfiguriert */
+    /* Eingang 1: Türkontakt bzw. Endlage "zu" (aktiv = Pegel 0) */
+    bool     in1_active;
+    bool     in1_known;
+    int      in1_cnt;
+    /* Eingang 2: Austaster (Türöffner) bzw. Endlage "auf" (Rolltor) */
+    bool     in2_active;
+    bool     in2_known;
+    int      in2_cnt;
+    /* Zusatzeingang: Austaster des Rolltors */
+    bool     aux_pressed;
+    int      aux_cnt;
 } door_state_t;
 
 static door_state_t s_doors[CFG_MAX_DOORS];
 /* Besitzer je Relais des Pools (Türindex) oder -1; aus den Settings abgeleitet */
 static int8_t s_relay_owner[CFG_MAX_DOORS];
+static bool   s_aux_configured[CFG_AUX_INPUTS];
 
 static bool valid_idx(int idx)
 {
@@ -74,7 +82,24 @@ int door_relay_gpio(int idx)      { return valid_idx(idx) ? (int)s_relay_gpio[id
 int door_relay_up_gpio(int idx)   { int r = relay_for(idx, DOOR_DIR_UP);   return r < 0 ? -1 : (int)s_relay_gpio[r]; }
 int door_relay_down_gpio(int idx) { int r = relay_for(idx, DOOR_DIR_DOWN); return r < 0 ? -1 : (int)s_relay_gpio[r]; }
 int door_contact_gpio(int idx)    { return valid_idx(idx) ? (int)s_contact_gpio[idx] : -1; }
-int door_rex_gpio(int idx)        { return valid_idx(idx) ? (int)s_rex_gpio[idx] : -1; }
+int door_input2_gpio(int idx)     { return valid_idx(idx) ? (int)s_rex_gpio[idx] : -1; }
+int door_aux_input_gpio(int n)    { return n >= 0 && n < CFG_AUX_INPUTS ? (int)s_aux_gpio[n] : -1; }
+
+/* Zusatzeingang (0..CFG_AUX_INPUTS-1) des Rolltor-Austasters, -1 wenn keiner/Türöffner */
+static int aux_for(int idx)
+{
+    if (!door_is_gate(idx)) return -1;
+    int n = (int)g_settings.door_ext[idx].rex_input - 1;
+    return n >= 0 && n < CFG_AUX_INPUTS ? n : -1;
+}
+
+int door_rex_gpio(int idx)
+{
+    if (!valid_idx(idx)) return -1;
+    if (!door_is_gate(idx)) return (int)s_rex_gpio[idx];
+    int n = aux_for(idx);
+    return n < 0 ? -1 : (int)s_aux_gpio[n];
+}
 
 /* Besitzer der Relais neu bestimmen: niedrigster aktiver Türindex gewinnt */
 static void compute_owners(void)
@@ -245,7 +270,46 @@ door_dir_t door_last_dir(int idx)
 bool door_contact_closed(int idx)
 {
     if (!valid_idx(idx) || !g_settings.doors[idx].door_contact_enable) return true;
-    return s_doors[idx].contact_closed;
+    return s_doors[idx].in1_active;
+}
+
+bool door_open_contact_active(int idx)
+{
+    if (!door_is_gate(idx) || !g_settings.doors[idx].exit_button_enable) return false;
+    return s_doors[idx].in2_active;
+}
+
+door_pos_t door_position(int idx)
+{
+    if (!valid_idx(idx)) return DOOR_POS_UNKNOWN;
+    const settings_door_t *cfg = &g_settings.doors[idx];
+    const door_state_t *d = &s_doors[idx];
+    if (!door_is_gate(idx)) {
+        if (!cfg->door_contact_enable) return DOOR_POS_UNKNOWN;
+        return d->in1_active ? DOOR_POS_CLOSED : DOOR_POS_OPEN;
+    }
+    bool has_closed = cfg->door_contact_enable, has_open = cfg->exit_button_enable;
+    bool closed = has_closed && d->in1_active, open = has_open && d->in2_active;
+    if (has_closed && has_open) {
+        if (closed && open) return DOOR_POS_ERROR;
+        if (closed) return DOOR_POS_CLOSED;
+        if (open) return DOOR_POS_OPEN;
+        return DOOR_POS_BETWEEN;
+    }
+    if (has_closed) return closed ? DOOR_POS_CLOSED : DOOR_POS_OPEN;   /* "nicht zu" */
+    if (has_open) return open ? DOOR_POS_OPEN : DOOR_POS_UNKNOWN;      /* "nicht auf", Rest unbekannt */
+    return DOOR_POS_UNKNOWN;
+}
+
+const char *door_position_name(door_pos_t p)
+{
+    switch (p) {
+    case DOOR_POS_CLOSED:  return "closed";
+    case DOOR_POS_OPEN:    return "open";
+    case DOOR_POS_BETWEEN: return "between";
+    case DOOR_POS_ERROR:   return "error";
+    default:               return "unknown";
+    }
 }
 
 int64_t door_last_open_uptime_s(int idx)
@@ -257,10 +321,16 @@ const char *door_settings_check(const settings_door_t doors[CFG_MAX_DOORS],
                                 const settings_door_ext_t ext[CFG_MAX_DOORS], char *err, size_t err_len)
 {
     int owner[CFG_MAX_DOORS];
+    int aux_owner[CFG_AUX_INPUTS];
     for (int r = 0; r < CFG_MAX_DOORS; r++) owner[r] = -1;
+    for (int n = 0; n < CFG_AUX_INPUTS; n++) aux_owner[n] = -1;
     for (int i = 0; i < CFG_MAX_DOORS; i++) {
         int used[2] = { i, -1 };
         if (ext[i].kind == DOOR_KIND_GATE) {
+            if (ext[i].rex_input > CFG_AUX_INPUTS) {
+                snprintf(err, err_len, "Tuer %d: Zusatzeingang fuer den Austaster muss 1..%d sein", i + 1, CFG_AUX_INPUTS);
+                return err;
+            }
             if (ext[i].relay_up >= CFG_MAX_DOORS || ext[i].relay_down >= CFG_MAX_DOORS) {
                 snprintf(err, err_len, "Tuer %d: Relais fuer Auf/Ab muss 1..%d sein", i + 1, CFG_MAX_DOORS);
                 return err;
@@ -286,29 +356,50 @@ const char *door_settings_check(const settings_door_t doors[CFG_MAX_DOORS],
             }
             owner[r] = i;
         }
+        if (ext[i].kind == DOOR_KIND_GATE && ext[i].rex_input > 0) {
+            int n = ext[i].rex_input - 1;
+            if (aux_owner[n] >= 0) {
+                snprintf(err, err_len, "Zusatzeingang %d wird als Austaster von Tuer %d und Tuer %d genutzt", n + 1,
+                         aux_owner[n] + 1, i + 1);
+                return err;
+            }
+            aux_owner[n] = i;
+        }
     }
     return NULL;
 }
 
-/* Kontakt-/REX-Pins einer Tür einmalig als Eingang mit Pull-up konfigurieren (nur wenn genutzt) */
-static void ensure_inputs(int idx)
+static void config_input_pins(uint64_t mask)
 {
-    const settings_door_t *cfg = &g_settings.doors[idx];
-    if (s_doors[idx].inputs_configured || !cfg->enabled ||
-        (!cfg->door_contact_enable && !cfg->exit_button_enable)) {
-        return;
-    }
     gpio_config_t in = {
-        .pin_bit_mask = (1ULL << s_contact_gpio[idx]) | (1ULL << s_rex_gpio[idx]),
+        .pin_bit_mask = mask,
         .mode = GPIO_MODE_INPUT,
         .pull_up_en = GPIO_PULLUP_ENABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .intr_type = GPIO_INTR_DISABLE,
     };
     gpio_config(&in);
-    s_doors[idx].inputs_configured = true;
-    s_doors[idx].contact_closed = true;
-    s_doors[idx].contact_known = false;
+}
+
+/* Eingänge einer Tür einmalig als Eingang mit Pull-up konfigurieren (nur wenn genutzt);
+ * Zusatzeingang des Rolltor-Austasters ebenso */
+static void ensure_inputs(int idx)
+{
+    const settings_door_t *cfg = &g_settings.doors[idx];
+    if (!cfg->enabled) return;
+    if (!s_doors[idx].inputs_configured && (cfg->door_contact_enable || cfg->exit_button_enable)) {
+        config_input_pins((1ULL << s_contact_gpio[idx]) | (1ULL << s_rex_gpio[idx]));
+        s_doors[idx].inputs_configured = true;
+        s_doors[idx].in1_active = true;              /* Annahme "zu", bis der erste Pegel steht */
+        s_doors[idx].in1_known = false;
+        s_doors[idx].in2_active = false;
+        s_doors[idx].in2_known = false;
+    }
+    int n = aux_for(idx);
+    if (n >= 0 && !s_aux_configured[n]) {
+        config_input_pins(1ULL << s_aux_gpio[n]);
+        s_aux_configured[n] = true;
+    }
 }
 
 void door_apply_settings(void)
@@ -330,6 +421,37 @@ void door_apply_settings(void)
     if (was_active) status_led_set(LED_OK);
 }
 
+/* Entprellen im 20-ms-Raster: true wenn sich der Zustand gerade stabil geändert hat */
+static bool debounce(bool raw, bool *state, int *cnt)
+{
+    if (raw == *state) { *cnt = 0; return false; }
+    if (++*cnt * 20 < CFG_INPUT_DEBOUNCE_MS) return false;
+    *cnt = 0;
+    *state = raw;
+    return true;
+}
+
+static const char *pos_text(door_pos_t p)
+{
+    switch (p) {
+    case DOOR_POS_CLOSED:  return "zu";
+    case DOOR_POS_OPEN:    return "auf";
+    case DOOR_POS_BETWEEN: return "zwischen den Endlagen";
+    case DOOR_POS_ERROR:   return "FEHLER, beide Endlagen aktiv";
+    default:               return "unbekannt";
+    }
+}
+
+/* Rolltor: Positionswechsel protokollieren; ohne eigenen Fahrbefehl (Taster/Funk am Tor) als Hinweis */
+static void log_gate_position(int i, const door_state_t *d)
+{
+    const settings_door_t *cfg = &g_settings.doors[i];
+    int64_t since_cmd = esp_timer_get_time() / 1000000 - d->last_open_s;
+    bool own = d->relay_active || (d->last_open_s && since_cmd <= 60);
+    event_log(EV_SYSTEM, "Rolltor %d '%s': %s%s", i + 1, cfg->name, pos_text(door_position(i)),
+              own ? "" : " (ohne Fahrbefehl der Anlage)");
+}
+
 /* Eingänge aller aktiven Türen entprellt pollen (20 ms Raster) */
 static void input_task(void *arg)
 {
@@ -339,44 +461,46 @@ static void input_task(void *arg)
         for (int i = 0; i < CFG_MAX_DOORS; i++) {
             const settings_door_t *cfg = &g_settings.doors[i];
             door_state_t *d = &s_doors[i];
-            if (!cfg->enabled || !d->inputs_configured) continue;
-            const char *what = door_is_gate(i) ? "Rolltor" : "Tuer";
+            if (!cfg->enabled) continue;
+            bool gate = door_is_gate(i);
 
-            if (cfg->door_contact_enable) {
-                bool closed = gpio_get_level(s_contact_gpio[i]) == 0;   /* Reed gegen GND */
-                if (closed != d->contact_closed) {
-                    if (++d->contact_cnt * 20 >= CFG_INPUT_DEBOUNCE_MS) {
-                        d->contact_cnt = 0;
-                        d->contact_closed = closed;
-                        if (d->contact_known) {
+            if (d->inputs_configured && cfg->door_contact_enable) {
+                bool active = gpio_get_level(s_contact_gpio[i]) == 0;    /* Kontakt gegen GND */
+                if (debounce(active, &d->in1_active, &d->in1_cnt)) {
+                    if (d->in1_known) {
+                        if (gate) {
+                            log_gate_position(i, d);
+                        } else {
                             int64_t since_open = esp_timer_get_time() / 1000000 - d->last_open_s;
-                            if (!closed && !d->relay_active && since_open > 15) {
-                                event_log(EV_SYSTEM, "ALARM: %s %d '%s' ohne Freigabe geoeffnet", what, i + 1, cfg->name);
+                            if (!active && !d->relay_active && since_open > 15) {
+                                event_log(EV_SYSTEM, "ALARM: Tuer %d '%s' ohne Freigabe geoeffnet", i + 1, cfg->name);
                             } else {
-                                event_log(EV_SYSTEM, "Kontakt %s %d '%s': %s", what, i + 1, cfg->name,
-                                          closed ? "geschlossen" : "offen");
+                                event_log(EV_SYSTEM, "Kontakt Tuer %d '%s': %s", i + 1, cfg->name,
+                                          active ? "geschlossen" : "offen");
                             }
                         }
-                        d->contact_known = true;
                     }
-                } else {
-                    d->contact_cnt = 0;
-                    d->contact_known = true;
                 }
+                d->in1_known = true;
             }
 
-            if (cfg->exit_button_enable) {
-                bool pressed = gpio_get_level(s_rex_gpio[i]) == 0;
-                if (pressed != d->rex_pressed) {
-                    if (++d->rex_cnt * 20 >= CFG_INPUT_DEBOUNCE_MS) {
-                        d->rex_cnt = 0;
-                        d->rex_pressed = pressed;
-                        if (pressed) {
-                            door_open(i, "Austaster", 0);
-                        }
+            if (d->inputs_configured && cfg->exit_button_enable) {
+                bool active = gpio_get_level(s_rex_gpio[i]) == 0;
+                if (debounce(active, &d->in2_active, &d->in2_cnt)) {
+                    if (gate) {
+                        if (d->in2_known) log_gate_position(i, d);
+                    } else if (active) {
+                        door_open(i, "Austaster", 0);
                     }
-                } else {
-                    d->rex_cnt = 0;
+                }
+                d->in2_known = true;
+            }
+
+            int n = aux_for(i);
+            if (n >= 0 && s_aux_configured[n]) {
+                bool pressed = gpio_get_level(s_aux_gpio[n]) == 0;
+                if (debounce(pressed, &d->aux_pressed, &d->aux_cnt) && pressed) {
+                    door_open(i, "Austaster", 0);
                 }
             }
         }
@@ -394,7 +518,7 @@ esp_err_t door_init(void)
         esp_err_t err = esp_timer_create(&args, &s_doors[i].timer);
         if (err != ESP_OK) return err;
         s_doors[i].active_relay = -1;
-        s_doors[i].contact_closed = true;
+        s_doors[i].in1_active = true;
     }
     /* Relais-Pins sind seit door_relay_safe_init() Ausgänge; jetzt Besitzer und NVS-Polarität setzen */
     char err[128];
@@ -415,12 +539,13 @@ esp_err_t door_init(void)
             continue;
         }
         if (door_is_gate(i)) {
-            ESP_LOGI(TAG, "Rolltor %d '%s': Auf Relais %d GPIO%d, Ab Relais %d GPIO%d (%s), Kontakt GPIO%d %s, REX GPIO%d %s",
+            ESP_LOGI(TAG, "Rolltor %d '%s': Auf Relais %d GPIO%d, Ab Relais %d GPIO%d (%s), Endlage zu GPIO%d %s, "
+                     "Endlage auf GPIO%d %s, Austaster GPIO%d",
                      i + 1, cfg->name, g_settings.door_ext[i].relay_up + 1, door_relay_up_gpio(i),
                      g_settings.door_ext[i].relay_down + 1, door_relay_down_gpio(i),
                      cfg->relay_active_low ? "active-low" : "active-high",
                      s_contact_gpio[i], cfg->door_contact_enable ? "aktiv" : "aus",
-                     s_rex_gpio[i], cfg->exit_button_enable ? "aktiv" : "aus");
+                     s_rex_gpio[i], cfg->exit_button_enable ? "aktiv" : "aus", door_rex_gpio(i));
         } else {
             ESP_LOGI(TAG, "Tuer %d '%s': Relais GPIO%d (%s), Kontakt GPIO%d %s, REX GPIO%d %s", i + 1, cfg->name,
                      s_relay_gpio[i], cfg->relay_active_low ? "active-low" : "active-high",

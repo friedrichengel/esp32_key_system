@@ -47,25 +47,27 @@
 ```
 Keypad (RS232) ──► MAX3232-Modul (3,3 V) ──► GPIO38 (UART1 RX), optional GPIO37 (TX)
 GPIO40 ──► Relaismodul Tür 1 (Optokoppler, 5 V vom J2) ──► NO-Kontakt in Serie zum Türöffner (12 V)
-GPIO42 ◄── Reed-Kontakt Tür 1 (gegen GND, interner Pull-up)
-GPIO39 ◄── Austaster innen Tür 1 (gegen GND, interner Pull-up)
+GPIO42 ◄── Eingang 1 Tür 1: Reed-Kontakt bzw. Rolltor-Endlage "zu" (gegen GND, interner Pull-up)
+GPIO39 ◄── Eingang 2 Tür 1: Austaster innen bzw. Rolltor-Endlage "auf" (gegen GND, interner Pull-up)
+GPIO2  ◄── Zusatzeingang 1: Austaster eines Rolltors (J2-7)
+GPIO3  ◄── Zusatzeingang 2: Austaster eines zweiten Rolltors (J2-10)
 ```
 
 Keypad im Test (28.10.2026): 9600 8N1, Ziffern als ASCII, Haken-Taste sendet 0x0D (Abschluss), X-Taste 0x08 (Löschen). Das sind die Werksdefaults der Firmware.
 
 Kontakt und Austaster können galvanisch getrennt über ein 4-Kanal-PC817-Modul (HY-M154, je Kanal IN/G auf der Eingangs- und V/G auf der Ausgangsseite, 3 kΩ vor der LED und 3 kΩ am Kollektor) angeschlossen werden: 12 V Plus über den Reed-Kontakt an IN1, 12 V Minus an das G daneben; V1 an GPIO42, das G der Ausgangsseite an J2-GND. Austaster gleich über Kanal 2 an GPIO39. Der Jumper, der Eingangs- und Ausgangs-G verbindet, bleibt gezogen. Mit 3 kΩ sind 12–24 V am Eingang zulässig, der Ausgang zieht den GPIO über den internen Pull-up auf etwa 0,4 V. Keine Firmware-Einstellung nötig.
 
-Weitere Türen (ab Werk deaktiviert, Pins bleiben dann unberührt; Zuordnung in `config.h`):
+Weitere Türen (ab Werk deaktiviert, Pins bleiben dann unberührt; Zuordnung in `config.h`). Eingang 1 ist beim Türöffner der Türkontakt, beim Rolltor die Endlage „zu“; Eingang 2 beim Türöffner der Austaster, beim Rolltor die Endlage „auf“:
 
-| Tür | Relais | Türkontakt | Austaster (REX) |
+| Tür | Relais | Eingang 1 (Kontakt / Endlage zu) | Eingang 2 (REX / Endlage auf) |
 |---|---|---|---|
 | 1 | GPIO40 (J2-19) | GPIO42 (J2-20) | GPIO39 (J2-21) |
 | 2 | GPIO43 (J2-17) | GPIO44 (J2-18) | GPIO45 (J2-15) |
 | 3 | GPIO46 (J2-16) | GPIO47 (J2-13) | GPIO48 (J2-14) |
 | 4 | GPIO49 (J2-11) | GPIO36 (J2-24) | GPIO35 (J2-25) |
 
-GPIO2 und GPIO3 (J2-7, J2-10) bleiben als Reserve frei. Das eine Keypad (UART1, GPIO37/38) ist in den Einstellungen einer dieser Türen zugeordnet.
+GPIO2 und GPIO3 (J2-7, J2-10) sind die Zusatzeingänge 1 und 2 für den Austaster eines Rolltors (Auswahl je Tor in System → Türen und Relais, gegen GND, interner Pull-up). Das eine Keypad (UART1, GPIO37/38) ist in den Einstellungen einer dieser Türen zugeordnet.
 
-**Rolltor:** Die vier Relais-Ausgänge bilden einen Pool (Relais 1–4 = GPIO40/43/46/49). Eine Tür vom Typ „Rolltor“ belegt zwei davon, eines für Auf und eines für Ab (Auswahl in System → Türen und Relais); die Tür, der das zweite Relais eigentlich gehört, muss dann deaktiviert sein. Beide Relais-Schließer gehen parallel zu den Auf-/Ab-Tastern der Torsteuerung, je Fahrbefehl ein Impuls (Impulsdauer der Tür, typisch 0,5–1 s). Die Firmware zieht nie beide Relais gleichzeitig an; ein Befehl in die Gegenrichtung lässt das laufende Relais sofort los. Torkontakt und Austaster hängen weiter an den Pins der jeweiligen Tür (Austaster fährt auf).
+**Rolltor:** Die vier Relais-Ausgänge bilden einen Pool (Relais 1–4 = GPIO40/43/46/49). Eine Tür vom Typ „Rolltor“ belegt zwei davon, eines für Auf und eines für Ab (Auswahl in System → Türen und Relais); die Tür, der das zweite Relais eigentlich gehört, muss dann deaktiviert sein. Beide Relais-Schließer gehen parallel zu den Auf-/Ab-Tastern der Torsteuerung, je Fahrbefehl ein Impuls (Impulsdauer der Tür, typisch 0,5–1 s). Die Firmware zieht nie beide Relais gleichzeitig an; ein Befehl in die Gegenrichtung lässt das laufende Relais sofort los. Die zwei Eingänge der Tür melden beim Rolltor die Endlagen: Eingang 1 (Tür 1: GPIO42) = „Tor zu“, Eingang 2 (Tür 1: GPIO39) = „Tor auf“, beide über den PC817-Optokoppler (Kanal 1 und 2) von den Endlagenkontakten der Torsteuerung; aktiv = Pegel 0. Die Übersicht zeigt daraus „Tor zu“, „Tor auf“, „zwischen den Endlagen“ oder „Fehler“ (beide aktiv), `position` in der API. Der Austaster des Rolltors (fährt auf) liegt auf Zusatzeingang 1 oder 2 (GPIO2/GPIO3).
 
 Stromversorgung: 5 V über J2 oder USB-C; Türöffner aus eigenem Netzteil, nie aus dem Board.

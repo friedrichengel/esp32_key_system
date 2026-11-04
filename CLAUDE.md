@@ -59,9 +59,10 @@ main/
 ├── codes_db.[ch]       Codes als /storage/codes.json, Prüfung (Gültigkeit, Fenster, Nutzungen), owner_uid +
 │                       Freigabemaske shared (Bit uid), Einmalcode-Nutzungsfenster grace_s (Laufzeituhr, nur RAM)
 ├── keypad_rs232.[ch]   UART1-Task, Rahmen-Parser (Terminator/feste Länge/Timeout), Rohdaten für Lernmodus
-├── door_relay.[ch]     bis zu CFG_MAX_DOORS Türen: Relais-Impuls per esp_timer, Türkontakt/REX entprellt; Typ Türöffner
-│                       (eigenes Relais) oder Rolltor (zwei Relais aus dem Pool, Auf/Ab verriegelt, door_close(), door_stop());
-│                       door_settings_check() verbietet Doppelbelegung eines Relais durch aktive Türen
+├── door_relay.[ch]     bis zu CFG_MAX_DOORS Türen: Relais-Impuls per esp_timer, zwei entprellte Eingänge je Tür; Typ Türöffner
+│                       (eigenes Relais, Eingänge = Türkontakt + REX) oder Rolltor (zwei Relais aus dem Pool, Auf/Ab verriegelt,
+│                       door_close(), door_stop(); Eingänge = Endlagen zu/auf → door_position(), Austaster auf Zusatzeingang
+│                       GPIO2/3 via door_ext.rex_input); door_settings_check() verbietet Doppelbelegung von Relais/Zusatzeingang
 ├── api_tokens.[ch]     Bearer-Token für Drittsysteme: SHA-256-Hash in /storage/tokens.json, Türmaske, Rechte,
 │                       IP-Regel, Ablauf, Rate-Limit je Quell-IP; Klartext nur einmal bei Erzeugung
 ├── sms_gateway.[ch]    SMS-Versand über Teltonika-RutOS-REST-API (Login + messages/actions/send), g_settings.sms,
@@ -81,7 +82,8 @@ keys/                   nur .gitkeep; private Schlüssel lokal
 |---|---|---|
 | Ethernet MDC/MDIO/PHY-Reset | 5 / 6 / 7 | RGMII-Daten GPIO8–19 fest (IDF-Default für S31) |
 | Keypad UART1 RX/TX | 38 / 37 | über MAX3232 |
-| Tür 1: Relais / Kontakt / REX | 40 / 42 / 39 | Polarität je Tür in Settings (`relay_active_low`) |
+| Tür 1: Relais / Eingang 1 / Eingang 2 | 40 / 42 / 39 | Polarität je Tür in Settings (`relay_active_low`); Eingang 1 = Türkontakt bzw. Rolltor-Endlage „zu“, Eingang 2 = REX bzw. Endlage „auf“ |
+| Zusatzeingang 1 / 2 (Rolltor-Austaster) | 2 / 3 | J2-7 / J2-10, Auswahl je Rolltor (`door_ext.rex_input`) |
 | Tür 2 / 3 / 4: Relais, Kontakt, REX | 43,44,45 / 46,47,48 / 49,36,35 | Türen 2–4 ab Werk deaktiviert, Pins dann unberührt |
 | WS2812 / BOOT | 60 / 61 | onboard |
 
@@ -101,4 +103,4 @@ keys/                   nur .gitkeep; private Schlüssel lokal
 
 ## Stand
 
-Phasen 0–5 aus PLAN.md sind implementiert und bauen fehlerfrei. Erster Hardwaretest 24.10.2026 (Board an COM4): Boot, Ethernet (1000 Mbit/s, DHCP, SLAAC), HTTPS über IPv4/IPv6 und mDNS laufen. Der RGMII-Sendetakt muss aus der APLL kommen (`CONFIG_ETH_EMAC_RGMII_TX_CLK_SRC_APLL`), weil die MPLL vom PSRAM belegt ist. Testnetz hat weder Internet noch NTP, die Uhr bleibt dort ungültig. Keypad-Test 28.10.2026: RS232-Keypad über MAX3232 empfängt; Haken-Taste sendet 0x0D (Abschluss), X-Taste 0x08 (Löschen), beides Werksdefault. UART1 braucht `uart_set_rx_full_threshold(1)`, weil der RX-Timeout-Interrupt des S31 ein einzelnes Byte sonst erst mit dem nächsten liefert. Ungetestet: Relais, Türkontakt/REX (geplant über PC817-Optokopplermodul, siehe hardware.md), OTA, 2FA. Phase 9 (29.10.2026, PLAN.md §8b–8d): Benutzer mit Rollen und Rechten, Besitz/Freigabe von Codes, 2FA je Benutzer, Loginseiten-Infos (Settings v4), Einmalcode-Nutzungsfenster; kompiliert, auf Hardware noch ungetestet. Rolltor-Türtyp (31.10.2026, PLAN.md §8e): Settings v5, `/api/door/close`, `/api/v1/doors/<n>/close`; kompiliert, ungetestet. WLAN optional zusätzlich zu Ethernet (31.10.2026, PLAN.md §3): Settings v6, `CONFIG_ESP_WIFI_ENABLED=y`, Scan-Endpunkt; kompiliert, ungetestet. Offene Punkte: PLAN.md §10 „Umsetzungsstand“ und §11.
+Phasen 0–5 aus PLAN.md sind implementiert und bauen fehlerfrei. Erster Hardwaretest 24.10.2026 (Board an COM4): Boot, Ethernet (1000 Mbit/s, DHCP, SLAAC), HTTPS über IPv4/IPv6 und mDNS laufen. Der RGMII-Sendetakt muss aus der APLL kommen (`CONFIG_ETH_EMAC_RGMII_TX_CLK_SRC_APLL`), weil die MPLL vom PSRAM belegt ist. Testnetz hat weder Internet noch NTP, die Uhr bleibt dort ungültig. Keypad-Test 28.10.2026: RS232-Keypad über MAX3232 empfängt; Haken-Taste sendet 0x0D (Abschluss), X-Taste 0x08 (Löschen), beides Werksdefault. UART1 braucht `uart_set_rx_full_threshold(1)`, weil der RX-Timeout-Interrupt des S31 ein einzelnes Byte sonst erst mit dem nächsten liefert. Ungetestet: Relais, Türkontakt/REX (geplant über PC817-Optokopplermodul, siehe hardware.md), OTA, 2FA. Phase 9 (29.10.2026, PLAN.md §8b–8d): Benutzer mit Rollen und Rechten, Besitz/Freigabe von Codes, 2FA je Benutzer, Loginseiten-Infos (Settings v4), Einmalcode-Nutzungsfenster; kompiliert, auf Hardware noch ungetestet. Rolltor-Türtyp (31.10.2026, PLAN.md §8e): Settings v5, `/api/door/close`, `/api/v1/doors/<n>/close`; kompiliert, ungetestet. Rolltor-Endlagen zu/auf auf den zwei Türeingängen, Austaster auf Zusatzeingang GPIO2/3, Torposition in Übersicht und API (04.11.2026); kompiliert, ungetestet. WLAN optional zusätzlich zu Ethernet (31.10.2026, PLAN.md §3): Settings v6, `CONFIG_ESP_WIFI_ENABLED=y`, Scan-Endpunkt; kompiliert, ungetestet. Offene Punkte: PLAN.md §10 „Umsetzungsstand“ und §11.

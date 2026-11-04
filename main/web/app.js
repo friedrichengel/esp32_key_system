@@ -168,6 +168,13 @@
     $('#dash-doors').innerHTML = active.map(d => {
       const gate = d.kind === 'gate';
       const dirText = dir => dir === 'down' ? 'ab' : 'auf';
+      const posRow = d => {
+        if (!d.contact_enabled && !d.open_contact_enabled) return '<div class="k">Torposition</div><div class="v">keine Endlagen konfiguriert</div>';
+        const map = { closed: ['Tor zu', 'ok'], open: ['Tor auf', 'warn'], between: [d.relay_active ? `fährt ${dirText(d.direction)}` : 'zwischen den Endlagen', 'warn'],
+          error: ['Fehler: beide Endlagen aktiv', 'bad'], unknown: ['nicht auf (nur Endlage Auf angeschlossen)', ''] };
+        const [text, cls] = map[d.position] || ['unbekannt', ''];
+        return `<div class="k">Torposition</div><div class="v"><span class="badge ${cls}">${text}</span></div>`;
+      };
       const badge = d.relay_active ? (gate ? `fährt ${dirText(d.direction)}` : 'Relais aktiv') : (gate ? 'Antrieb bereit' : 'Relais aus');
       const last = d.last_open_uptime_s
         ? 'vor ' + fmtUptime(s.system.uptime_s - d.last_open_uptime_s) + (gate ? ` (${dirText(d.last_direction)})` : '')
@@ -180,7 +187,7 @@
         <div class="row" style="justify-content:space-between;margin:0 0 6px"><strong>${esc(d.name)}</strong>${gate ? ' <span class="hint">Rolltor</span>' : ''}
           <span class="badge ${d.relay_active ? 'warn' : 'ok'}">${badge}</span></div>
         <div class="kv">
-          <div class="k">${gate ? 'Torkontakt' : 'Türkontakt'}</div><div class="v ${d.contact_enabled && !d.contact_closed ? 'warn' : ''}">${d.contact_enabled ? (d.contact_closed ? 'geschlossen' : 'offen') : 'nicht konfiguriert'}</div>
+          ${gate ? posRow(d) : `<div class="k">Türkontakt</div><div class="v ${d.contact_enabled && !d.contact_closed ? 'warn' : ''}">${d.contact_enabled ? (d.contact_closed ? 'geschlossen' : 'offen') : 'nicht konfiguriert'}</div>`}
           <div class="k">${gate ? 'Letzter Fahrbefehl' : 'Letzte Öffnung'}</div><div class="v">${last}</div>
         </div>
         ${buttons}
@@ -823,9 +830,13 @@ sensor:
   function relayOptions(relays, selected) {
     return relays.map(r => `<option value="${r.relay}" ${r.relay === selected ? 'selected' : ''}>Relais ${r.relay} (GPIO${r.gpio})</option>`).join('');
   }
-  function renderDoorForms(doors, relays) {
+  function auxOptions(aux, selected) {
+    return `<option value="0" ${!selected ? 'selected' : ''}>keiner</option>` +
+      aux.map(a => `<option value="${a.input}" ${a.input === selected ? 'selected' : ''}>Zusatzeingang ${a.input} (GPIO${a.gpio})</option>`).join('');
+  }
+  function renderDoorForms(doors, relays, aux) {
     $('#doors-forms').innerHTML = doors.map(d => `
-      <fieldset data-door="${d.door}"><legend>Tür ${d.door} · eigenes Relais ${d.door} = GPIO${d.pins.relay}, Kontakt GPIO${d.pins.contact}, REX GPIO${d.pins.rex}</legend>
+      <fieldset data-door="${d.door}"><legend>Tür ${d.door} · eigenes Relais ${d.door} = GPIO${d.pins.relay}, Eingang 1 GPIO${d.pins.contact}, Eingang 2 GPIO${d.pins.input2}</legend>
         <div class="grid2">
           <label>Name <input name="name" maxlength="31" value="${esc(d.name)}" required></label>
           <label>Typ <select name="kind">
@@ -835,16 +846,21 @@ sensor:
           <label>Impulsdauer (ms) <input name="relay_pulse_ms" type="number" min="500" max="30000" step="100" value="${d.relay_pulse_ms}"></label>
           <label data-gate>Relais Auf <select name="relay_up">${relayOptions(relays, d.relay_up)}</select></label>
           <label data-gate>Relais Ab <select name="relay_down">${relayOptions(relays, d.relay_down)}</select></label>
+          <label data-gate>Austaster <select name="rex_input">${auxOptions(aux, d.rex_input)}</select></label>
         </div>
         <div class="row">
           <label><input type="checkbox" name="enabled" ${d.enabled ? 'checked' : ''}> Tür aktiv</label>
           <label><input type="checkbox" name="relay_active_low" ${d.relay_active_low ? 'checked' : ''}> Relaismodul ist Active-Low</label>
-          <label><input type="checkbox" name="door_contact_enable" ${d.door_contact_enable ? 'checked' : ''}> Tür-/Torkontakt angeschlossen</label>
-          <label><input type="checkbox" name="exit_button_enable" ${d.exit_button_enable ? 'checked' : ''}> Austaster (REX) angeschlossen</label>
+          <label><input type="checkbox" name="door_contact_enable" ${d.door_contact_enable ? 'checked' : ''}> <span data-opener>Türkontakt angeschlossen (GPIO${d.pins.contact})</span><span data-gate>Endlage „Tor zu“ angeschlossen (GPIO${d.pins.contact})</span></label>
+          <label><input type="checkbox" name="exit_button_enable" ${d.exit_button_enable ? 'checked' : ''}> <span data-opener>Austaster (REX) angeschlossen (GPIO${d.pins.input2})</span><span data-gate>Endlage „Tor auf“ angeschlossen (GPIO${d.pins.input2})</span></label>
         </div>
       </fieldset>`).join('');
     $$('#doors-forms select[name=kind]').forEach(sel => {
-      const update = () => $$('[data-gate]', sel.closest('fieldset')).forEach(l => l.classList.toggle('hidden', sel.value !== 'gate'));
+      const update = () => {
+        const fs = sel.closest('fieldset'), gate = sel.value === 'gate';
+        $$('[data-gate]', fs).forEach(l => l.classList.toggle('hidden', !gate));
+        $$('[data-opener]', fs).forEach(l => l.classList.toggle('hidden', gate));
+      };
       sel.addEventListener('change', update);
       update();
     });
@@ -865,7 +881,7 @@ sensor:
     $('#form-sms').password.placeholder = smsPasswordSet ? 'unverändert lassen' : 'Passwort des API-Benutzers';
     $('#sms-pw-hint').textContent = smsPasswordSet ? 'Ein Passwort ist gespeichert und wird nie angezeigt. Leer lassen, um es zu behalten.' : 'Noch kein Passwort gespeichert.';
     doorsBrief = s.doors.map(d => ({ door: d.door, name: d.name, enabled: d.enabled }));
-    renderDoorForms(s.doors, s.relays || []);
+    renderDoorForms(s.doors, s.relays || [], s.aux_inputs || []);
     renderKeypadDoorSelect(s.doors, s.keypad.door);
     fillForm($('#form-keypad'), s.keypad);
     fillForm($('#form-site'), s.site);
@@ -1086,7 +1102,7 @@ sensor:
 
   onSubmit('#form-doors', async () => {
     const doors = $$('#doors-forms fieldset').map(fs => Object.assign({ door: Number(fs.dataset.door) }, formData(fs)));
-    doors.forEach(d => { d.relay_up = Number(d.relay_up); d.relay_down = Number(d.relay_down); });
+    doors.forEach(d => { d.relay_up = Number(d.relay_up); d.relay_down = Number(d.relay_down); d.rex_input = Number(d.rex_input) || 0; });
     await api('/api/system', { method: 'POST', json: { doors } });
     toast('Gespeichert', 'ok');
     await loadSystem();

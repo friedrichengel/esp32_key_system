@@ -439,7 +439,7 @@
   <section id="view-system" class="view hidden">
     <div class="card">
       <h2>Türen und Relais</h2>
-      <p class="hint">Jede Tür ist ein <strong>Türöffner</strong> (ein Relais, der Impuls öffnet) oder ein <strong>Rolltor</strong> (zwei Relais aus dem Pool der vier Relais-Ausgänge, eines für Auf und eines für Ab, je Fahrbefehl ein Impuls). Ein Relais darf nur einer aktiven Tür gehören; nutzt ein Rolltor das Relais einer anderen Tür, muss diese deaktiviert sein. Türkontakt und Austaster sind optional (Pins stehen in der Überschrift); der Austaster öffnet bzw. fährt das Rolltor auf. Deaktivierte Türen lassen ihre Pins unberührt.</p>
+      <p class="hint">Jede Tür ist ein <strong>Türöffner</strong> (ein Relais, der Impuls öffnet) oder ein <strong>Rolltor</strong> (zwei Relais aus dem Pool der vier Relais-Ausgänge, eines für Auf und eines für Ab, je Fahrbefehl ein Impuls). Ein Relais darf nur einer aktiven Tür gehören; nutzt ein Rolltor das Relais einer anderen Tür, muss diese deaktiviert sein. Jede Tür hat zwei Eingänge (Pins stehen in der Überschrift): beim Türöffner Türkontakt und Austaster (öffnet), beim Rolltor die Endlagen „Tor zu“ (Eingang 1) und „Tor auf“ (Eingang 2), beide über Optokoppler. Der Austaster eines Rolltors liegt auf einem Zusatzeingang (GPIO2 oder GPIO3) und fährt das Tor auf. Deaktivierte Türen lassen ihre Pins unberührt.</p>
       <form id="form-doors">
         <div id="doors-forms"></div>
         <button type="submit">Speichern</button>
